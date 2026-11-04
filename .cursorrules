@@ -1,0 +1,30 @@
+# 仿真巡检 AMR + Flutter 上位机 — AI 编码规则
+
+## 必须先读
+开发前读取 `AI_CONTEXT.md` 获取项目上下文。需要细节时查 `docs/requirements.md`（需求）和 `docs/architecture.md`（架构）。
+
+## 硬性约束
+- 仿真器是 **Gazebo Sim (gz-sim8)**，禁止使用 Gazebo Classic 插件
+- ROS 版本 **Jazzy**，用 colcon + ament，不用 catkin
+- MQTT 桥用 `ros-jazzy-mqtt-client`，不是 mqtt_bridge
+- 话题/消息格式必须符合 `AI_CONTEXT.md` 第 5 节契约
+- 地图叠加层实现 `MapLayer` 接口，不改 MapView 核心
+- 状态管理用 Riverpod，流数据→StreamProvider，命令→Notifier
+
+## 工作流
+1. 读 AI_CONTEXT.md → 明确任务属于哪个阶段
+2. 读 docs/DEVELOPMENT_PLAN.md → 找到当前阶段任务清单
+3. 查 architecture.md 对应章节获取模块设计
+4. 按目录结构创建文件
+5. 仿真端：`colcon build --symlink-install` 验证
+6. Flutter 端：`flutter analyze` 验证
+
+## 文档同步（强制）
+- 修改 topic/消息格式/接口签名 → 同步更新 AI_CONTEXT.md 第5节 + architecture.md
+- 阶段完成 → 更新 DEVELOPMENT_PLAN.md 勾选状态 + 追加交接备注
+- 文档与代码矛盾时，以代码为准修正文档
+
+## 环境
+- WSL2 + Ubuntu 24.04 + ROS2 Jazzy
+- 终端先 `source /opt/ros/jazzy/setup.bash`
+- App 连 WSL IP（`hostname -I`），非 localhost

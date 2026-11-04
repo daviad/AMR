@@ -1,0 +1,64 @@
+# ros_gz_bridge 话题桥接配置
+# 方向：ROS_TO_GZ = ROS -> Gazebo；GZ_TO_ROS = Gazebo -> ROS；BIDIRECTIONAL = 双向
+- ros_topic_name: "/cmd_vel"
+  gz_topic_name: "/cmd_vel"
+  ros_type_name: "geometry_msgs/msg/Twist"
+  gz_type_name: "gz.msgs.Twist"
+  direction: ROS_TO_GZ
+
+- ros_topic_name: "/scan"
+  gz_topic_name: "/scan"
+  ros_type_name: "sensor_msgs/msg/LaserScan"
+  gz_type_name: "gz.msgs.LaserScan"
+  direction: GZ_TO_ROS
+
+- ros_topic_name: "/imu/data"
+  gz_topic_name: "/imu/data"
+  ros_type_name: "sensor_msgs/msg/Imu"
+  gz_type_name: "gz.msgs.IMU"
+  direction: GZ_TO_ROS
+
+# /odom 与 /tf 由差速驱动插件发布（轮式里程计，真实传感器链路）。
+# 撞墙漂移问题已在 URDF 侧通过 max_wheel_torque + 轮摩擦修复，
+# 使轮子打滑而非空转，漂移在 SLAM 可纠正范围内。
+- ros_topic_name: "/odom"
+  gz_topic_name: "/odom"
+  ros_type_name: "nav_msgs/msg/Odometry"
+  gz_type_name: "gz.msgs.Odometry"
+  direction: GZ_TO_ROS
+
+- ros_topic_name: "/tf"
+  gz_topic_name: "/tf"
+  ros_type_name: "tf2_msgs/msg/TFMessage"
+  gz_type_name: "gz.msgs.Pose_V"
+  direction: GZ_TO_ROS
+
+- ros_topic_name: "/joint_states"
+  gz_topic_name: "/joint_states"
+  ros_type_name: "sensor_msgs/msg/JointState"
+  gz_type_name: "gz.msgs.Model"
+  direction: GZ_TO_ROS
+
+- ros_topic_name: "/camera/image_raw"
+  gz_topic_name: "/camera/image_raw"
+  ros_type_name: "sensor_msgs/msg/Image"
+  gz_type_name: "gz.msgs.Image"
+  direction: GZ_TO_ROS
+
+# 压缩图：ros_gz_bridge 无 gz.msgs.Image→CompressedImage 模板特化，无法直接桥。
+# 方案：ROS 端 image_transport republish（raw→compressed）生成 /camera/image_raw/compressed，
+# 由 amr_bringup/full_bringup.launch.py 中的 republish 节点提供。
+
+# 仿真时钟：所有 use_sim_time 节点（含 inspection_node 定时器）依赖它
+- ros_topic_name: "/clock"
+  gz_topic_name: "/clock"
+  ros_type_name: "rosgraph_msgs/msg/Clock"
+  gz_type_name: "gz.msgs.Clock"
+  direction: GZ_TO_ROS
+
+# gz 真值位姿（世界系），用于建图遍历真值反馈与调试核对（非运行时依赖）
+- ros_topic_name: "/gz_truth"
+  gz_topic_name: "/world/indoor/dynamic_pose/info"
+  ros_type_name: "tf2_msgs/msg/TFMessage"
+  gz_type_name: "gz.msgs.Pose_V"
+  direction: GZ_TO_ROS

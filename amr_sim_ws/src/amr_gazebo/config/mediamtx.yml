@@ -1,0 +1,44 @@
+logLevel: info
+logDestinations: [stdout]
+logStructured: false
+
+# RTSP（WSL mirrored 模式下低端口被 Windows 占用，用高端口）
+rtsp: true
+rtspAddress: :18554
+rtspEncryption: "no"
+rtspTransports: [tcp]
+
+# HLS（Web 大屏兜底）
+hls: true
+hlsAddress: :18888
+hlsEncryption: false
+hlsAlwaysRemux: true
+hlsVariant: lowLatency
+hlsSegmentCount: 7
+hlsSegmentDuration: 1s
+hlsPartDuration: 200ms
+hlsSegmentMaxSize: 50M
+hlsAllowOrigins: ["*"]
+
+# WebRTC（Flutter App 主视频通道，WHEP）
+# 端口约定：
+#   8889 = WHEP 信令（HTTP，TCP）
+#   8189 = ICE（UDP + ICE-TCP）
+# 10.0.2.2 / 127.0.0.1 两个 address 分别覆盖 Android 模拟器 NAT 与 adb reverse。
+webrtc: true
+webrtcAddress: :8889
+webrtcEncryption: false
+webrtcAllowOrigins: ["*"]
+webrtcLocalUDPAddress: :8189
+webrtcLocalTCPAddress: :8189
+webrtcIPsFromInterfaces: true
+webrtcAdditionalHosts: [10.0.2.2, 127.0.0.1]
+webrtcHandshakeTimeout: 10s
+webrtcTrackGatherTimeout: 2s
+
+# 路径配置：camera = 主码流；camera_low = 弱网降级码流
+paths:
+  camera:
+    source: publisher
+  camera_low:
+    source: publisher

@@ -1,0 +1,57 @@
+<?xml version="1.0"?>
+<!-- IMU 传感器：gz-sim imu_sensor，桥接到 /imu/data -->
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+  <xacro:macro name="amr_imu" params="tf_prefix:='' parent:='base_link'">
+
+    <link name="${tf_prefix}imu_link">
+      <visual>
+        <geometry>
+          <box size="0.02 0.02 0.01"/>
+        </geometry>
+        <material name="green">
+          <color rgba="0.1 0.8 0.2 1.0"/>
+        </material>
+      </visual>
+       <collision>
+        <geometry>
+          <box size="0.02 0.02 0.01"/>
+        </geometry>
+      </collision>
+      <inertial>
+        <mass value="0.01"/>
+        <inertia ixx="0.000001" ixy="0.0" ixz="0.0"
+                 iyy="0.000001" iyz="0.0" izz="0.000001"/>
+      </inertial>
+    </link>
+    <joint name="${tf_prefix}imu_joint" type="fixed">
+      <parent link="${tf_prefix}${parent}"/>
+      <child link="${tf_prefix}imu_link"/>
+      <!-- 置于两轮中点(x=-0.10, y=0)正上方：差速车旋转中心，角速度/加速度耦合最小；
+           底面 z=0.055 落在底盘顶面(z=0.05)之上，且远离中心支撑杆(x=0) -->
+      <origin xyz="-0.10 0.0 0.06" rpy="0 0 0"/>
+    </joint>
+
+    <gazebo reference="${tf_prefix}imu_link">
+      <sensor name="imu_sensor" type="imu">
+        <pose>0 0 0 0 0 0</pose>
+        <topic>imu/data</topic>
+        <gz_frame_id>${tf_prefix}imu_link</gz_frame_id>
+        <update_rate>50</update_rate>
+        <always_on>true</always_on>
+        <imu>
+          <angular_velocity>
+            <x><noise type="gaussian"><mean>0.0</mean><stddev>0.001</stddev></noise></x>
+            <y><noise type="gaussian"><mean>0.0</mean><stddev>0.001</stddev></noise></y>
+            <z><noise type="gaussian"><mean>0.0</mean><stddev>0.001</stddev></noise></z>
+          </angular_velocity>
+          <linear_acceleration>
+            <x><noise type="gaussian"><mean>0.0</mean><stddev>0.01</stddev></noise></x>
+            <y><noise type="gaussian"><mean>0.0</mean><stddev>0.01</stddev></noise></y>
+            <z><noise type="gaussian"><mean>0.0</mean><stddev>0.01</stddev></noise></z>
+          </linear_acceleration>
+        </imu>
+      </sensor>
+    </gazebo>
+
+  </xacro:macro>
+</robot>

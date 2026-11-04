@@ -1,0 +1,111 @@
+# mqtt_client (ros-jazzy-mqtt-client) 配置
+# MQTT↔ROS 映射按 architecture.md 5.2 节契约
+# ROS 侧话题均为 std_msgs/String（payload 为 JSON 字符串），primitive: true 表示
+# payload 原样透传（不再包一层 JSON）
+mqtt_client:
+  ros__parameters:
+    broker:
+      host: localhost
+      port: 1884
+    bridge:
+      # ── MQTT → ROS：命令（QoS 1）──
+      mqtt2ros:
+        mqtt_topics:
+          - amr/cmd/goal
+          - amr/cmd/cancel
+          - amr/cmd/inspection/start
+          - amr/cmd/inspection/stop
+          - amr/cmd/mode
+          - amr/cmd/estop
+          - amr/cmd/return_charge
+        amr/cmd/goal:
+          ros_topic: /amr/cmd/goal
+          primitive: true
+          qos: 1
+        amr/cmd/cancel:
+          ros_topic: /amr/cmd/cancel
+          primitive: true
+          qos: 1
+        amr/cmd/inspection/start:
+          ros_topic: /amr/cmd/inspection/start
+          primitive: true
+          qos: 1
+        amr/cmd/inspection/stop:
+          ros_topic: /amr/cmd/inspection/stop
+          primitive: true
+          qos: 1
+        amr/cmd/mode:
+          ros_topic: /amr/cmd/mode
+          primitive: true
+          qos: 1
+        amr/cmd/estop:
+          ros_topic: /amr/cmd/estop
+          primitive: true
+          qos: 1
+        amr/cmd/return_charge:
+          ros_topic: /amr/cmd/return_charge
+          primitive: true
+          qos: 1
+      # ── ROS → MQTT：状态（QoS 0，模式/电量 retain）──
+      ros2mqtt:
+        ros_topics:
+          - /battery/state
+          - /inspection/status
+          - /amr/status/mode
+          - /amr/alert
+          - /amr/cmd/ack
+          - /amr/cmd/feedback
+          - /amr/cmd/result
+          - /amr/trace
+          - /video/metrics
+          - /video/health
+        /battery/state:
+          mqtt_topic: amr/status/battery
+          primitive: true
+          qos: 0
+          retained: true
+        /inspection/status:
+          mqtt_topic: amr/status/inspection
+          primitive: true
+          qos: 0
+          retained: false
+        /amr/status/mode:
+          mqtt_topic: amr/status/mode
+          primitive: true
+          qos: 0
+          retained: true
+        /amr/alert:
+          mqtt_topic: amr/alert
+          primitive: true
+          qos: 0
+          retained: false
+        /amr/cmd/ack:
+          mqtt_topic: amr/cmd/ack
+          primitive: true
+          qos: 1
+          retained: false
+        /amr/cmd/feedback:
+          mqtt_topic: amr/cmd/feedback
+          primitive: true
+          qos: 0
+          retained: false
+        /amr/cmd/result:
+          mqtt_topic: amr/cmd/result
+          primitive: true
+          qos: 1
+          retained: false
+        /amr/trace:
+          mqtt_topic: amr/trace
+          primitive: true
+          qos: 0
+          retained: false
+        /video/metrics:
+          mqtt_topic: amr/status/video_metrics
+          primitive: true
+          qos: 0
+          retained: true
+        /video/health:
+          mqtt_topic: amr/status/video
+          primitive: true
+          qos: 0
+          retained: true

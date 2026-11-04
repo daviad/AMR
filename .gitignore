@@ -1,0 +1,68 @@
+# ============================================================
+# AMR 项目根 .gitignore
+# 覆盖：ROS 2 工作空间（amr_sim_ws）+ Flutter App（amr_app）
+# ============================================================
+
+# ---------- ROS 2 ----------
+# colcon 构建/安装/日志产物，可由 colcon build 重新生成，且含机器绝对路径
+/amr_sim_ws/build/
+/amr_sim_ws/install/
+/amr_sim_ws/log/
+
+# ---------- Flutter / Dart ----------
+/amr_app/.dart_tool/
+/amr_app/build/
+/amr_app/.packages
+/amr_app/.flutter-plugins
+/amr_app/.flutter-plugins-dependencies
+# 说明：pubspec.lock 故意不忽略 —— 应用型工程锁定依赖版本，保证三端构建一致
+
+# ---------- Android ----------
+/amr_app/android/.gradle/
+/amr_app/android/local.properties
+# 签名文件与安装包绝不入库
+**/*.jks
+**/*.keystore
+**/key.properties
+**/*.apk
+**/*.aab
+
+# ---------- iOS ----------
+/amr_app/ios/Pods/
+/amr_app/ios/.symlinks/
+**/xcuserdata/
+**/DerivedData/
+
+# ---------- Python ----------
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+**/*.egg-info/
+
+# ---------- 日志与录制数据 ----------
+**/*.log
+**/*.bag
+**/*.db3
+**/*.mcap
+
+# ---------- 密钥 / 证书 ----------
+# 仓库根与 amr_sim_ws 下的自签名开发证书及私钥，含私钥材料，绝不入库
+*.key
+*.pem
+*.p12
+*.pfx
+/auto.crt
+/amr_sim_ws/auto.crt
+
+# ---------- 编辑器 / 操作系统 ----------
+# .vscode/settings.json 记录了机器相关绝对路径（/home/dxw/...），不入库
+.vscode/
+.idea/
+*.iml
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# ---------- 用户明确要求 ----------
+# 学习笔记目录整体不上传
+/learn/

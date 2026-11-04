@@ -1,0 +1,181 @@
+<?xml version="1.0"?>
+<!-- 三轮差速底盘：base_link + 左右驱动轮 + 单个前脚轮，含支撑杆、碰撞与惯性
+     高度基准：base_link 原点距地面 0.08m；驱动轮底与脚轮底均落在 z=-0.08（地面） -->
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+  <xacro:macro name="amr_base" params="tf_prefix:=''">
+
+    <!-- 公共惯性宏：长方体 -->
+    <xacro:macro name="box_inertia" params="mass x y z">
+      <inertial>
+        <mass value="${mass}"/>
+        <inertia ixx="${mass*(y*y+z*z)/12.0}" ixy="0.0" ixz="0.0"
+                 iyy="${mass*(x*x+z*z)/12.0}" iyz="0.0"
+                 izz="${mass*(x*x+y*y)/12.0}"/>
+      </inertial>
+    </xacro:macro>
+
+    <!-- 公共惯性宏：圆柱体（绕 z） -->
+    <xacro:macro name="cylinder_inertia" params="mass r l">
+      <inertial>
+        <mass value="${mass}"/>
+        <inertia ixx="${mass*(3*r*r+l*l)/12.0}" ixy="0.0" ixz="0.0"
+                 iyy="${mass*(3*r*r+l*l)/12.0}" iyz="0.0"
+                 izz="${mass*r*r/2.0}"/>
+      </inertial>
+    </xacro:macro>
+
+    <!-- 底盘主体：0.40(x) x 0.30(y) x 0.10(z)，几何中心即 base_link 原点
+         顶面 z=+0.05，底面 z=-0.05（距地面 0.03m 离地间隙） -->
+    <link name="${tf_prefix}base_link">
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <geometry>
+          <box size="0.40 0.30 0.10"/>
+        </geometry>
+        <material name="dark_gray">
+          <color rgba="0.2 0.2 0.2 1.0"/>
+        </material>
+      </visual>
+      <collision>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <geometry>
+          <box size="0.40 0.30 0.10"/>
+        </geometry>
+      </collision>
+      <xacro:box_inertia mass="10.0" x="0.40" y="0.30" z="0.10"/>
+    </link>
+
+    <!-- 支撑杆：连接底盘顶面(z=0.05)与上层设备仓底面(z=0.19)，高 0.14m -->
+    <link name="${tf_prefix}pole_link">
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <geometry>
+          <cylinder radius="0.02" length="0.14"/>
+        </geometry>
+        <material name="silver">
+          <color rgba="0.7 0.7 0.7 1.0"/>
+        </material>
+      </visual>
+      <collision>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <geometry>
+          <cylinder radius="0.02" length="0.14"/>
+        </geometry>
+      </collision>
+      <xacro:cylinder_inertia mass="0.3" r="0.02" l="0.14"/>
+    </link>
+    <joint name="${tf_prefix}pole_joint" type="fixed">
+      <parent link="${tf_prefix}base_link"/>
+      <child link="${tf_prefix}pole_link"/>
+      <!-- 杆中心在 (0.05 + 0.19)/2 = 0.12 -->
+      <origin xyz="0 0 0.12" rpy="0 0 0"/>
+    </joint>
+
+    <!-- 上层设备仓：底面 z=0.19，中心 z=0.23，顶面 z=0.27 -->
+    <link name="${tf_prefix}top_link">
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <geometry>
+          <box size="0.30 0.22 0.08"/>
+        </geometry>
+        <material name="orange">
+          <color rgba="0.9 0.5 0.1 1.0"/>
+        </material>
+      </visual>
+      <collision>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <geometry>
+          <box size="0.30 0.22 0.08"/>
+        </geometry>
+      </collision>
+      <xacro:box_inertia mass="2.0" x="0.30" y="0.22" z="0.08"/>
+    </link>
+    <joint name="${tf_prefix}top_joint" type="fixed">
+      <parent link="${tf_prefix}base_link"/>
+      <child link="${tf_prefix}top_link"/>
+      <!-- top_link 中心高度 0.23，底面 0.19 正好落在杆顶 -->
+      <origin xyz="0 0 0.23" rpy="0 0 0"/>
+    </joint>
+
+    <!-- 左驱动轮：半径 0.06，宽 0.04；轮心 z=-0.02，轮底 z=-0.08（地面） -->
+    <link name="${tf_prefix}left_wheel_link">
+      <visual>
+        <origin xyz="0 0 0" rpy="1.5707963 0 0"/>
+        <geometry>
+          <cylinder radius="0.06" length="0.04"/>
+        </geometry>
+        <material name="wheel_black">
+          <color rgba="0.05 0.05 0.05 1.0"/>
+        </material>
+      </visual>
+      <collision>
+        <origin xyz="0 0 0" rpy="1.5707963 0 0"/>
+        <geometry>
+          <cylinder radius="0.06" length="0.04"/>
+        </geometry>
+      </collision>
+      <xacro:cylinder_inertia mass="0.5" r="0.06" l="0.04"/>
+    </link>
+    <joint name="${tf_prefix}left_wheel_joint" type="continuous">
+      <parent link="${tf_prefix}base_link"/>
+      <child link="${tf_prefix}left_wheel_link"/>
+      <!-- 后移至 x=-0.10：形成前万向轮 + 后双驱动轮的稳定差速布局 -->
+      <origin xyz="-0.10 0.165 -0.02" rpy="0 0 0"/>
+      <axis xyz="0 1 0"/>
+    </joint>
+
+    <!-- 右驱动轮 -->
+    <link name="${tf_prefix}right_wheel_link">
+      <visual>
+        <origin xyz="0 0 0" rpy="1.5707963 0 0"/>
+        <geometry>
+          <cylinder radius="0.06" length="0.04"/>
+        </geometry>
+        <material name="wheel_black">
+          <color rgba="0.05 0.05 0.05 1.0"/>
+        </material>
+      </visual>
+      <collision>
+        <origin xyz="0 0 0" rpy="1.5707963 0 0"/>
+        <geometry>
+          <cylinder radius="0.06" length="0.04"/>
+        </geometry>
+      </collision>
+      <xacro:cylinder_inertia mass="0.5" r="0.06" l="0.04"/>
+    </link>
+    <joint name="${tf_prefix}right_wheel_joint" type="continuous">
+      <parent link="${tf_prefix}base_link"/>
+      <child link="${tf_prefix}right_wheel_link"/>
+      <origin xyz="-0.10 -0.165 -0.02" rpy="0 0 0"/>
+      <axis xyz="0 1 0"/>
+    </joint>
+
+    <!-- 前脚轮（万向球）：半径 0.025，球心 z=-0.055，球底 z=-0.08 与驱动轮底共面着地 -->
+    <link name="${tf_prefix}front_caster_link">
+      <visual>
+        <geometry>
+          <sphere radius="0.025"/>
+        </geometry>
+        <material name="caster_gray">
+          <color rgba="0.5 0.5 0.5 1.0"/>
+        </material>
+      </visual>
+      <collision>
+        <geometry>
+          <sphere radius="0.025"/>
+        </geometry>
+      </collision>
+      <inertial>
+        <mass value="0.1"/>
+        <inertia ixx="0.00001" ixy="0.0" ixz="0.0"
+                 iyy="0.00001" iyz="0.0" izz="0.00001"/>
+      </inertial>
+    </link>
+    <joint name="${tf_prefix}front_caster_joint" type="fixed">
+      <parent link="${tf_prefix}base_link"/>
+      <child link="${tf_prefix}front_caster_link"/>
+      <origin xyz="0.15 0.0 -0.055" rpy="0 0 0"/>
+    </joint>
+
+  </xacro:macro>
+</robot>

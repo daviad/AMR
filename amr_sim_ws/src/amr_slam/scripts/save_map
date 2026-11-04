@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# 保存 Cartographer 建图结果到 amr_nav/maps（pgm + yaml）
+# 用法：ros2 run amr_slam save_map [地图名，默认 indoor] [超时秒，默认 10]
+set -euo pipefail
+
+NAME="${1:-indoor}"
+TIMEOUT="${2:-10.0}"
+# 强制浮点写法：save_map_timeout 是 double 参数，传 "15" 会因整型类型不匹配而失败
+if [[ "$TIMEOUT" != *.* ]]; then
+  TIMEOUT="$TIMEOUT.0"
+fi
+
+# 未 source 环境时自动补齐（正常经 ros2 run 调用时已就绪）
+if ! command -v ros2 >/dev/null 2>&1; then
+  # shellcheck disable=SC1091
+  source /opt/ros/jazzy/setup.bash
+fi
+WS="${AMR_WS:-$HOME/amr/amr_sim_ws}"
+if ! ros2 pkg prefix amr_nav >/dev/null 2>&1 && [ -f "$WS/install/setup.bash" ]; then
+  # shellcheck disable=SC1090
+  source "$WS/install/setup.bash"
+fi
+
+# 默认存到源码目录，避免 install 侧副本被下次构建覆盖；可用 AMR_MAP_DIR 覆盖
+MAP_DIR="${AMR_MAP_DIR:-$WS/src/amr_nav/maps}"
+mkdir -p "$MAP_DIR"
+
+echo "保存地图到 $MAP_DIR/$NAME.{pgm,yaml}"
+ros2 run nav2_map_server map_saver_cli \
+  -f "$MAP_DIR/$NAME" \
+  -t /map \
+  --ros-args \
+  -p use_sim_time:=true \
+  -p map_subscribe_transient_local:=true \
+  -p save_map_timeout:="$TIMEOUT"

@@ -1,0 +1,68 @@
+<?xml version="1.0"?>
+<!-- 巡检 AMR 主模型：组装底盘 + 激光雷达 + IMU + 摄像头
+     注意：本 URDF 不嵌 <ros> 标签，话题全部由 ros_gz_bridge 桥接 -->
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="amr_robot">
+
+  <xacro:arg name="tf_prefix" default=""/>
+
+  <xacro:include filename="amr_base.xacro"/>
+  <xacro:include filename="amr_lidar.xacro"/>
+  <xacro:include filename="amr_imu.xacro"/>
+  <xacro:include filename="amr_camera.xacro"/>
+
+  <xacro:amr_base tf_prefix="$(arg tf_prefix)"/>
+  <xacro:amr_lidar tf_prefix="$(arg tf_prefix)" parent="top_link"/>
+  <xacro:amr_imu tf_prefix="$(arg tf_prefix)" parent="base_link"/>
+  <xacro:amr_camera tf_prefix="$(arg tf_prefix)" parent="top_link"/>
+
+  <!-- 驱动轮摩擦：mu1=纵向(滚动方向), mu2=侧向。
+       真实橡胶轮 mu≈1.0；配合 max_wheel_torque 使撞墙时轮子打滑而非空转 -->
+  <gazebo reference="$(arg tf_prefix)left_wheel_link">
+    <mu1>1.0</mu1>
+    <mu2>1.0</mu2>
+  </gazebo>
+  <gazebo reference="$(arg tf_prefix)right_wheel_link">
+    <mu1>1.0</mu1>
+    <mu2>1.0</mu2>
+  </gazebo>
+
+  <!-- 前脚轮（万向球）摩擦：置 0 让球体无侧向阻力自由滑动。
+       原先未配置时默认 mu≈1.0，原地旋转时球体被地面"锁住"产生阻力，
+       实测指令 172.5° 只转出 69.6°（仅 40%），里程计偏航严重失真。 -->
+  <gazebo reference="$(arg tf_prefix)front_caster_link">
+    <mu1>0.0</mu1>
+    <mu2>0.0</mu2>
+  </gazebo>
+
+  <!-- gz-sim 模型级插件（gazebo 扩展，非 <ros> 标签） -->
+  <gazebo>
+    <!-- 差速驱动：/cmd_vel 控制，发布 /odom 与 odom->base_link TF（真实传感器链路）。
+         工程化处理"撞墙穿墙"：加 max_wheel_torque 限制轮端扭矩，
+         使撞墙时轮子打滑而非完美空转，避免轮式里程计累积不真实的巨大漂移。
+         真实机器人撞墙时电机也会停转/打滑，里程计漂移在 SLAM 可纠正范围内。 -->
+    <plugin filename="gz-sim-diff-drive-system" name="gz::sim::systems::DiffDrive">
+      <left_joint>$(arg tf_prefix)left_wheel_joint</left_joint>
+      <right_joint>$(arg tf_prefix)right_wheel_joint</right_joint>
+      <wheel_separation>0.33</wheel_separation>
+      <wheel_radius>0.06</wheel_radius>
+      <max_wheel_torque>2.0</max_wheel_torque>
+      <odom_publish_frequency>50</odom_publish_frequency>
+      <topic>cmd_vel</topic>
+      <odom_topic>odom</odom_topic>
+      <tf_topic>tf</tf_topic>
+      <frame_id>odom</frame_id>
+      <child_frame_id>$(arg tf_prefix)base_link</child_frame_id>
+    </plugin>
+    <!-- 关节状态发布（robot_state_publisher 需要 /joint_states）
+         必须显式指定 topic：gz 默认发在 /joint_state（无 s），与 bridge 配置不符，
+         会导致 RViz 中轮子关节无 TF -->
+    <plugin filename="gz-sim-joint-state-publisher-system" name="gz::sim::systems::JointStatePublisher">
+      <topic>joint_states</topic>
+      <!-- 限频：30Hz 足够轮子可视化，同时降低 /tf 流量避免 teleop 卡顿 -->
+      <update_rate>30</update_rate>
+      <joint_name>$(arg tf_prefix)left_wheel_joint</joint_name>
+      <joint_name>$(arg tf_prefix)right_wheel_joint</joint_name>
+    </plugin>
+  </gazebo>
+
+</robot>
