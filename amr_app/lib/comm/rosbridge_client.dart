@@ -127,20 +127,28 @@ class RosbridgeClient {
   }
 
   /// 订阅 topic，返回广播流（msg 部分）。流取消监听时自动退订。
+  /// [qos] 见 [rosSubscribe]：只在 topic 首个订阅创建 DDS 订阅时生效。
   Stream<Map<String, dynamic>> subscribe(
     String topic, {
     String? type,
     int queueLength = 1,
     int? throttleRate,
+    Map<String, dynamic>? qos,
   }) {
     _subParams[topic] = _SubParams(
-        type: type, queueLength: queueLength, throttleRate: throttleRate);
+        type: type,
+        queueLength: queueLength,
+        throttleRate: throttleRate,
+        qos: qos);
     late StreamController<Map<String, dynamic>> controller;
     controller = StreamController<Map<String, dynamic>>.broadcast(
       onListen: () {
         _listeners.putIfAbsent(topic, () => []).add(controller);
         _send(rosSubscribe(topic,
-            type: type, queueLength: queueLength, throttleRate: throttleRate));
+            type: type,
+            queueLength: queueLength,
+            throttleRate: throttleRate,
+            qos: qos));
       },
       onCancel: () {
         _listeners[topic]?.remove(controller);
@@ -168,7 +176,8 @@ class RosbridgeClient {
         _send(rosSubscribe(topic,
             type: p.type,
             queueLength: p.queueLength,
-            throttleRate: p.throttleRate));
+            throttleRate: p.throttleRate,
+            qos: p.qos));
       }
     });
   }
@@ -184,8 +193,13 @@ class RosbridgeClient {
 }
 
 class _SubParams {
-  const _SubParams({this.type, this.queueLength = 1, this.throttleRate});
+  const _SubParams(
+      {this.type,
+      this.queueLength = 1,
+      this.throttleRate,
+      this.qos});
   final String? type;
   final int queueLength;
   final int? throttleRate;
+  final Map<String, dynamic>? qos;
 }

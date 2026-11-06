@@ -2,11 +2,16 @@ import 'dart:math';
 
 /// rosbridge 协议消息序列化（JSON op 码封装）。
 
+/// [qos] 原样透传给 rosbridge（键名与 rosbridge 的 qos 字段一致，
+/// 例如 {'durability': 'transient_local', 'reliability': 'reliable'}）。
+/// 注意：rosbridge 只在 topic 的首个订阅创建 DDS 订阅时使用 qos，
+/// 之后的客户端复用同一个 DDS 订阅，无法再改变 QoS。
 Map<String, dynamic> rosSubscribe(
   String topic, {
   String? type,
   int queueLength = 1,
   int? throttleRate,
+  Map<String, dynamic>? qos,
 }) =>
     {
       'op': 'subscribe',
@@ -14,6 +19,7 @@ Map<String, dynamic> rosSubscribe(
       if (type != null) 'type': type,
       'queue_length': queueLength,
       if (throttleRate != null) 'throttle_rate': throttleRate,
+      if (qos != null) 'qos': qos,
     };
 
 Map<String, dynamic> rosUnsubscribe(String topic) =>

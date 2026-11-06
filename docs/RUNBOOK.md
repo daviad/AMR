@@ -15,7 +15,7 @@
 | 仿真端工作空间                  | `/home/dxw/amr/amr_sim_ws`           |
 | Flutter 项目（WSL 源码，主）   | `/home/dxw/amr/amr_app`              |
 | Flutter 项目（Windows 构建副本） | `C:\Users\dxw\Documents\dev\amr_app` |
-| WSL IP（mirrored 模式）      | `192.168.0.103`（`hostname -I` 查看）    |
+| WSL IP（mirrored 模式）      | `192.168.0.103`（示例值，以 `hostname -I` 为准）    |
 | rosbridge（WebSocket）     | `9090`                               |
 | MQTT（TCP）               | `1884`                               |
 | MQTT（WebSocket，Web 大屏用） | `9002`                               |
@@ -56,7 +56,7 @@ sudo apt install -y \
 - JDK 21（`C:\Users\dxw\.jdks\jbr-21.0.11`）
 - Android 模拟器：`Small_Phone`（emulator-5554）
 
-> ⚠️ **不要用 Android Studio 自带的 JDK 25**，Kotlin 2.4.0 编译会挂起。必须用 JDK 21。
+> ⚠️ **JDK 25 仅作提示**：历史上遇到过 Kotlin 2.4.0 编译卡住；但 2026-11-05 实测 JDK 25（Android Studio 自带 JBR）下三次 `flutter build apk --debug` 均成功。若构建确实卡死，再切 JDK 21。
 
 ***
 
@@ -160,10 +160,14 @@ env -u LD_LIBRARY_PATH bash -lc '
 若部分 lifecycle 节点激活超时，手动兜底（launch 已自动 activate，一般不需要）：
 
 ```bash
+env -u LD_LIBRARY_PATH bash -lc '
+source /opt/ros/jazzy/setup.bash
+source /home/dxw/amr/amr_sim_ws/install/setup.bash
 for n in planner_server behavior_server bt_navigator waypoint_follower \
          velocity_smoother collision_monitor route_server docking_server; do
   ros2 lifecycle set /$n activate 2>/dev/null | grep -E "Transitioning|active"
 done
+'
 ```
 
 ### 2.5 验证仿真端就绪
@@ -194,7 +198,7 @@ curl -s -D - -o /tmp/answer.sdp -X POST \
 # 期望：HTTP/1.1 201 Created，SDP answer 含 H.264 + setup:active
 
 # 拍照通道（image_transport republish，与视频链路解耦）
-env -u LD_LIBRARY_PATH bash -lc 'source /opt/ros/jazzy/setup.bash; source install/setup.bash; \
+env -u LD_LIBRARY_PATH bash -lc 'cd /home/dxw/amr/amr_sim_ws; source /opt/ros/jazzy/setup.bash; source install/setup.bash; \
   timeout 6 ros2 topic echo --once /camera/image_raw/compressed sensor_msgs/msg/CompressedImage' 2>/dev/null | head -3
 ```
 
@@ -245,6 +249,7 @@ ros2 run amr_slam save_map indoor
 存图落在 `src/amr_nav/maps/`，随后重建一次 `amr_nav` 让 install 侧生效（用 `--symlink-install` 构建则立即可见）：
 
 ```bash
+cd /home/dxw/amr/amr_sim_ws
 colcon build --symlink-install --packages-select amr_nav
 ```
 
@@ -252,6 +257,7 @@ colcon build --symlink-install --packages-select amr_nav
 若 `save_map` 卡住不退出，说明 `/map` 发布端不是 transient local，改用关闭该选项的手动命令：
 
 ```bash
+cd /home/dxw/amr/amr_sim_ws
 ros2 run nav2_map_server map_saver_cli -f src/amr_nav/maps/indoor \
   --ros-args -p map_subscribe_transient_local:=false -p use_sim_time:=true
 ```
@@ -259,6 +265,8 @@ ros2 run nav2_map_server map_saver_cli -f src/amr_nav/maps/indoor \
 ***
 
 ## 3. Flutter App 启动（Windows）
+
+> 💡 不想逐条敲命令：§3.1–§3.5 的流程已固化成一键脚本，见 **§3.7**。下面的手动步骤保留，用于排障和看清每一步在做什么。
 
 ### 3.1 同步代码（WSL → Windows）
 
@@ -271,7 +279,7 @@ Copy-Item -LiteralPath 'C:\Users\dxw\Documents\dev\amr_app' -Destination "C:\Use
 # ② 只读漂移检查（构建前必跑；退出码 0=一致，1=副本过期）
 powershell -ExecutionPolicy Bypass -File "\\wsl.localhost\Ubuntu\home\dxw\amr\tools\sync_app_to_windows.ps1" -Check
 
-# ③ 正式同步（/MIR 会删除目标中源端不存在的文件）
+# ③ 正式同步（默认 /E：保留目标侧独有文件；要清理请显式加 -Purge）
 powershell -ExecutionPolicy Bypass -File "\\wsl.localhost\Ubuntu\home\dxw\amr\tools\sync_app_to_windows.ps1"
 ```
 
@@ -283,8 +291,8 @@ powershell -ExecutionPolicy Bypass -File "\\wsl.localhost\Ubuntu\home\dxw\amr\to
 ```
 
 - 同步成功后目标根目录会写 `SYNC_INFO.txt`（记录 `pubspec_sha256`、`lib_files`、`lib_sha256`），`-Check` 用它判断"副本是否最新"。
-- 排除 `.dart_tool` / `build` / `.git` / `.idea` / `.gradle` / `ephemeral` / `.vscode` 与 `*.iml` / `*.log`。
-- 已知漂移（2026-11-04 实测）：Windows 副本 `lib/` 为 47 个文件、源端 50 个，`pubspec.yaml` 缺 `flutter_webrtc`，WebRTC 相关文件差异见该文档第 11.5 节。
+- （脚本 v5）排除 `.dart_tool` / `build` / `.git` / `.gradle` / `ephemeral` / `.vscode` 与 `*.iml` / `*.log` / `local.properties` / `.flutter-plugins-dependencies` / `.flutter-plugins`；`.idea` 不做整体镜像，只生成安全子集（`modules.xml`、`gradle.xml`、`runConfigurations/main_dart.xml`、根 `amr_app.iml`）；同步结束后自动执行 `flutter pub get`；默认 `robocopy /E` 不删除目标侧独有文件，需要清理时加 `-Purge`。
+- 2026-11-05 已收敛：Windows 副本与源端 `lib/` 均为 51 个文件，`pubspec.yaml` 已含 `flutter_webrtc`。
 
 > ⚠️ `C:\Users\dxw\amr_app_emulator` 已废弃，**不要再构建**。
 > 本项目已加 `android:usesCleartextTraffic="true"` 和 INTERNET/ACCESS_NETWORK_STATE 权限；若同步后 AndroidManifest 没这两项，手动补。
@@ -293,7 +301,7 @@ powershell -ExecutionPolicy Bypass -File "\\wsl.localhost\Ubuntu\home\dxw\amr\to
 
 ```powershell
 # 在 PowerShell 中
-& 'C:\Users\dxw\AppData\Local\Android\Sdk\emulator\emulator.exe' -avd Small_Phone
+& 'C:\Users\dxw\fvm\android-sdk\emulator\emulator.exe' -avd Small_Phone
 
 # 如果模拟器已启动，先杀掉
 Get-Process qemu-system-x86_64,emulator,adb -ErrorAction SilentlyContinue | Stop-Process -Force; & 'C:\Users\dxw\fvm\android-sdk\platform-tools\adb.exe' kill-server; Start-Sleep -Seconds 3; Remove-Item 'C:\Users\dxw\.android\avd\Small_Phone.avd\*.lock' -Force -ErrorAction SilentlyContinue; & 'C:\Users\dxw\fvm\android-sdk\platform-tools\adb.exe' devices
@@ -322,7 +330,7 @@ New-NetFirewallRule -DisplayName "AMR-TCP" -Direction Inbound -Protocol TCP -Loc
 New-NetFirewallRule -DisplayName "AMR-WebRTC-UDP" -Direction Inbound -Protocol UDP -LocalPort 8189 -Action Allow -Profile Private
 ```
 
-#### 方式 B：adb reverse（只能走 TCP，WebRTC 自动退化为 RTSP）
+#### 方式 B：adb reverse（只能走 TCP，WebRTC 不通时需手动切到 RTSP）
 
 模拟器每次重启后重设：
 
@@ -348,7 +356,7 @@ $adb = 'C:\Users\dxw\fvm\android-sdk\platform-tools\adb.exe'
 ```powershell
 cd C:\Users\dxw\Documents\dev\amr_app
 
-# 用 JDK 21（JDK 25 不兼容 Kotlin 2.4.0）
+# 建议用 JDK 21（JDK 25 下 2026-11-05 实测可构建；若卡死再切 21）
 $env:JAVA_HOME = 'C:\Users\dxw\.jdks\jbr-21.0.11'
 $env:PATH = "$env:JAVA_HOME\bin;$env:PATH"
 
@@ -359,7 +367,7 @@ $env:PUB_HOSTED_URL = 'https://pub.dev'
 
 flutter pub get
 flutter run -d emulator-5554 --dart-define=AMR_HOST=192.168.0.103
-# 若用 adb reverse：不带 --dart-define（默认 127.0.0.1）
+# 若用 adb reverse：不带 --dart-define 时源码默认 127.0.0.1；一键脚本（-AmrHost auto）默认传 LAN IP
 ```
 
 方式二：构建 APK 后安装（验证用，推荐）
@@ -388,7 +396,7 @@ flutter build web --dart-define=AMR_HOST=localhost
 ```
 
 ```bash
-# 2) WSL 侧起静态服务（Windows 浏览器可直连）
+# 2) WSL 侧起静态服务（Windows 浏览器可直连；需先执行上一段的 flutter build web 生成 build/web）
 cd "/mnt/c/Users/dxw/Documents/dev/amr_app/build/web"
 python3 -m http.server 8081 --bind 0.0.0.0
 ```
@@ -425,6 +433,103 @@ Web 大屏打开后，检查：
 - 右下「巡检控制」卡有「开始 / 停止」按钮
 - 顶栏 MQTT / ROS 指示灯为绿色
 
+### 3.7 一键脚本（App / Web）
+
+§3.1–§3.5 手动拼起来要敲十几条命令。两个脚本把整套流程固化成一条命令，默认值就是本机环境，所有路径都能用参数覆盖：
+
+| 脚本 | 位置 | 作用 |
+|---|---|---|
+| `amr_start_windows.ps1` | `\\wsl.localhost\Ubuntu\home\dxw\amr\` | Windows 侧 App：同步 → 构建 → 安装 → 启动 → adb reverse |
+| `amr_web_start.ps1` | 同上 | Web 大屏：release 构建 → 起静态服务 |
+
+> 同步后（`sync_app_to_windows.ps1` v4 起）这两个脚本也会一并带到 Windows 侧 `amr_app` 目录（`C:\Users\dxw\Documents\dev\amr_app`），可直接在那里执行 `.\amr_start_windows.ps1` / `.\amr_web_start.ps1`。
+
+> ⚠️ 必须在**普通 Windows PowerShell 5.1 窗口**（或 VS Code 的 PowerShell 终端）里执行，不要用管理员窗口，也不要在 Trae 的沙箱终端里跑 —— 沙箱会拦截 Gradle / Flutter 对工程目录的写入，表现为 `拒绝访问` 或 `Flutter failed to open a file`。
+
+#### 3.7.1 App 一键启动
+
+```powershell
+powershell -ExecutionPolicy Bypass -File "\\wsl.localhost\Ubuntu\home\dxw\amr\amr_start_windows.ps1"
+```
+
+默认（`-Mode install`）等价于 §3.1–§3.4 全流程：
+
+同步 Windows 副本 → 前置检查（flutter / adb / SDK / JDK / AVD）→ `gradlew.bat --stop` → `flutter pub get`（含 `.flutter-plugins-dependencies` 的 `/home/` 自检）→ 复用在线设备或启动 AVD 并轮询 `sys.boot_completed=1` → 检查 9090 / 1884 / 8889 / 18554 → `adb reverse` 四条 → `flutter build apk --debug` → `adb install -r` → `am start`。结束时打印设备、端口、WS 地址摘要。任一前置缺失只报"缺什么、你该怎么做"，不会甩红字堆栈。
+
+**日常会用**：
+
+| 参数 | 作用 |
+|---|---|
+| （无参数） | 全流程：同步 + 构建 + 安装 + 启动 + reverse |
+| `-Mode attach` | 改用 `flutter run -d <设备>`，带热重载，占住终端（Ctrl+C 退出） |
+| `-Mode build` | 只构建 APK，不碰设备 |
+| `-NoSync` | 跳过同步（副本已最新，省 20~30s） |
+| `-NetMode nat` | WSL 为 NAT 时使用；`AMR_HOST` 取 WSL IP，可用 `-WslIp` 显式指定 |
+| `-Clean` | 先 `flutter clean`（「改了代码没生效」时用，耗时增加） |
+
+**排障会用**：
+
+| 参数 | 作用 |
+|---|---|
+| `-DryRun` | 只打印将执行的命令与各项判定结果，不产生副作用 |
+| `-NoAvd` | 设备不在线时也不启动模拟器，直接以退出码 5 失败 |
+| `-Avd <name>` | AVD 名，默认 `Small_Phone` |
+| `-Project` / `-Flutter` / `-SdkRoot` / `-Jdk` / `-SyncScript` | 覆盖副本目录 / flutter.bat / Android SDK / JDK / 同步脚本路径 |
+| `-RosbridgePort` / `-MqttPort` / `-WhepPort` / `-RtspPort` | 覆盖 9090 / 1884 / 8889 / 18554（同时用于端口检查与 `adb reverse`） |
+
+`-Jdk` 指向的路径不存在时只警告并沿用当前 `JAVA_HOME`（不硬失败）；脚本只在自身进程内设置 `JAVA_HOME`，不污染你的终端配置。
+
+#### 3.7.2 Web 一键启动
+
+```powershell
+powershell -ExecutionPolicy Bypass -File "\\wsl.localhost\Ubuntu\home\dxw\amr\amr_web_start.ps1"
+```
+
+默认流程：`flutter build web --release --dart-define=AMR_HOST=localhost`（mirrored 下）→ 校验 `build\web\index.html` → 起静态服务（优先 WSL `python3 -m http.server`，其次 Windows python，两者都没有会明确报错而不是假装成功）→ 打印访问地址。服务在前台运行，Ctrl+C 停止。
+
+| 参数 | 用途 |
+|---|---|
+| （无参数） | release 构建 + 在 8081 起静态服务 |
+| `-NoBuild` | 跳过构建，直接服务已有 `build\web`（改完代码只想重启服务时用） |
+| `-Port <n>` | 静态服务端口，默认 **8081** |
+| `-Open` | 起服务后自动打开浏览器 |
+| `-Profile` | 构建 profile 版（默认 release） |
+| `-Server auto\|wsl\|windows` | 指定静态服务运行位置（默认 auto） |
+| `-RosbridgePort` / `-MqttWsPort` / `-HlsPort` | 覆盖 9090 / 9002 / 18888，仅用于启动前的连通性提示 |
+| `-NetMode nat` / `-WslIp` | WSL 为 NAT 时构建 `AMR_HOST=WSL IP`，浏览器也用该 IP 访问 |
+| `-NoBuild` + `-DryRun` | 排障：看它选中哪种 python、会执行哪条命令 |
+
+> **端口口径**：脚本默认静态服务 **8081**，与 §3.5 的 `python3 -m http.server 8081` 一致，浏览器地址 `http://localhost:8081/#/dashboard`。§3.5 末尾的 `flutter run -d web-server --web-port=8080` 是另一条路径（Flutter 自带 dev server），不是静态服务。若想让静态服务也走 8080，加 `-Port 8080`，访问地址随之变成 `http://localhost:8080/#/dashboard`。
+
+#### 3.7.3 先决条件与常见失败
+
+- **先跑 WSL 侧**：脚本只做端口连通性提示，**不会**替你启动 Gazebo / rosbridge / MQTT / mediamtx。先按 §2.3 启动 `./amr_start.sh`，否则 App 能装上但 WS / MQTT 灯是灰的。
+- **mirrored**（默认，`-AmrHost auto`）：App 取 WSL `eth0` 的 LAN IP（如 `192.168.0.103`），TCP 与 UDP 都直达；`adb reverse` 仍会设置作为 TCP 兜底（UDP 8189 无法转发）。Web 用 `localhost`。
+- **nat**：App 与 Web 都改用 WSL IP（脚本自动 `hostname -I` 探测，失败回退 `127.0.0.1`），`-WslIp` 可覆盖。nat 下 `adb reverse` 仍会设置，但 WebRTC 的 UDP 8189 走直连，需按 §3.3 方式 A 放行防火墙。
+- **App 首页 WS 未连接**：先确认 WSL 侧 `amr_start.sh` 还在跑，再看 1884/9090 是否可达。
+- **相机页不出画面**：确认 App 的 `AMR_HOST` 是宿主 LAN IP（镜像模式下即 WSL `eth0`，如 `192.168.0.103`），不能用 `127.0.0.1`——`adb reverse` 只能转发 TCP，UDP 8189 过不去。
+- **端口不通不会静默失败**：rosbridge / MQTT / WHEP / RTSP（Web 侧再加 MQTT-WS 9002 / HLS 18888）不通时逐条打印 `[警告]` 并说明后果。
+- **`.flutter-plugins-dependencies` 含 `/home/`**：脚本会自动重跑一次 `flutter pub get` 并复查；仍残留则说明 WSL 侧生成物又被同步过来了，见 §3.1 的 v3 排除规则。
+- **`local.properties` 是 WSL 路径**（`/home/...` 或 `/mnt/c/...`）：脚本会备份原文件并重写为 Windows 路径。
+- **`ios/Flutter/ephemeral/.swift_pm.lock` 残留导致 `build web` 报 `cannot access the file or directory`**：Web 脚本在构建失败后会移走该 0 字节锁文件并自动重试一次。
+
+**退出码**（App 与 Web 共用，便于脚本串联）：
+
+| 退出码 | 含义 |
+|---|---|
+| 0 | 成功 |
+| 2 | 参数错误 |
+| 3 | 前置缺失（flutter / adb / SDK / 工程目录不存在） |
+| 4 | 同步失败或构建失败 |
+| 5 | 设备不在线、端口被占用、安装/启动失败 |
+
+#### 3.7.4 已验证范围（截至 2026-11-06）
+
+- **已实测**：`amr_start_windows.ps1 -Mode install -NoSync` 全流程退出码 0 —— `assembleDebug 27.7s`、APK 230.8 MB、`install Success`、App 进程已启动、4 条 `adb reverse` 规则在列，9090 / 1884 / 8889 / 18554 四项端口检查均为 OK。
+- **已实测**：`amr_web_start.ps1 -NoBuild -Port 8099` 起服务后 `GET /index.html` 返回 200（2477 B）、`HEAD /main.dart.js` 返回 200，9090 / 9002 / 18888 三项提示均为 OK；单独执行 `flutter build web --release` 成功（23.7s）。
+- **未实测**：AVD 冷启动（复用了当时已在线`emulator-5554`）、`-Mode attach`、`-NetMode nat`、`-Open`。
+- **未完整跑通**：`amr_web_start.ps1` 的「构建 + 起服务」整条链路 —— 编写脚本的沙箱环境里 Flutter 打不开上述 `.swift_pm.lock`（脚本已内置移走后重试），构建与服务两端已分开验证。
+
 ***
 
 ## 4. 功能验证清单
@@ -455,7 +560,7 @@ Web 大屏打开后，检查：
 | 到达充电     | 电量开始上升（charging:true）  |
 | 充满（95%）  | 恢复 AUTO 模式             |
 
-> 测试低电量：启动时加参数 `initial_level:=21`（需改 launch 或 ros2 run）。
+> 测试低电量：`full_bringup.launch.py` 未声明 `initial_level`，直接 `ros2 launch ... initial_level:=<值>` 会报未知参数；需在 launch 中补 `DeclareLaunchArgument('initial_level', default_value='100.0')` 并透传给 `inspection_node`，或单独 `ros2 run amr_inspection inspection_node --ros-args -p initial_level:=21`。
 
 ### 4.4 视频流（P9，已重构为 GStreamer + MediaMTX + WebRTC）
 
@@ -465,7 +570,7 @@ Web 大屏打开后，检查：
 | 顶部健康条 | `HEALTHY` + fps + 分辨率 + RTT + jitter + decode P50/P95 |
 | 点画质菜单 → 低码流 | 1s 内切到 `camera_low`，分辨率/码率降低 |
 | 点画质菜单 → 自动 | 连续 2 次 DEGRADED/LOST 自动切低码流；连续 4 次 HEALTHY 自动升回 |
-| 视频中断（停掉 mediamtx） | App 健康条变 `LOST`，10s 内自动退化为 RTSP / rosbridge（若启用） |
+| 视频中断（停掉 mediamtx） | App 健康条变 `LOST`，需在相机页手动切到 RTSP / rosbridge（若启用） |
 | 视频中断时拍照 | 仍可拍照（`/camera/image_raw/compressed` 独立链路） |
 | 视频中断时导航 | 控制通道仍可用（MQTT 与 WebRTC 解耦） |
 | 点击截图 | 保存 JPEG 到临时目录（Android：`/data/user/0/com.amr.amr_app/cache/amr_captures`） |
@@ -575,7 +680,7 @@ trace 会写出 `ack_dropped_by_fault` / `result_dropped_by_fault`，App 侧指�
 
 ## 6. 常见问题排查
 
-### Q1：MQTT 上行无消息（电量/模式状态收不到）
+### Q1：MQTT 状态上报无消息（电量/模式状态收不到）
 
 **原因**：`/clock` 未桥接，use\_sim\_time 节点的定时器不触发。
 
@@ -601,7 +706,7 @@ ros2 topic hz /clock   # 应有数据
 
 ### Q4：WebRTC 不通 / 视频 LOST 持续重连
 
-**原因**：`adb reverse` 不支持 UDP，WebRTC ICE 拿不到 UDP 候选对，协商失败。App 会指数退化到 RTSP / rosbridge JPEG。
+**原因**：`adb reverse` 不支持 UDP，WebRTC ICE 拿不到 UDP 候选对，协商失败。App 不会自动切源，需在相机页手动切到 RTSP / rosbridge JPEG。
 
 **修复**（推荐）：改用 WSL mirrored IP + `--dart-define=AMR_HOST=<wsl_ip>` + Windows 防火墙放行 UDP 8189。确认 WSL 侧 MediaMTX 启动时有这两行：
 
@@ -630,9 +735,9 @@ curl -s -D - -o /tmp/a.sdp -X POST -H 'Content-Type: application/sdp' \
 
 ### Q6：Kotlin 编译卡死
 
-**原因**：Android Studio 自带 JDK 25 不兼容 Kotlin 2.4.0。
+**原因**：历史记录显示 Android Studio 自带 JDK 25 曾导致 Kotlin 2.4.0 编译卡住；但 2026-11-05 实测 JDK 25 下构建成功，属“遇到再切”的提示。
 
-**修复**：设置 `JAVA_HOME=C:\Users\dxw\.jdks\jbr-21.0.11`。
+**修复**：若确实卡死，设置 `JAVA_HOME=C:\Users\dxw\.jdks\jbr-21.0.11`。
 
 ### Q7：模拟器无法连接 rosbridge/MQTT/WHEP
 
@@ -747,7 +852,7 @@ ps aux | grep mission_bridge
 
 **修复**：已从 `indoor.world` 中删除 `<gui>` 段（已固化在源文件并有注释说明），GUI 改用默认布局 `~/.gz/sim/8/gui.config`（其中 MinimalScene 显式 `<engine>ogre2</engine>`），渲染正常。勿在 world 中重新添加 `<gui>` 段。
 
-**验证**：`gz sim -r install/amr_gazebo/share/amr_gazebo/worlds/indoor.world` 终端无任何错误输出即正常。
+**验证**：先 `cd /home/dxw/amr/amr_sim_ws`，再执行 `gz sim -r install/amr_gazebo/share/amr_gazebo/worlds/indoor.world`，终端无任何错误输出即正常。
 
 
 ## 7. 启动顺序总览
@@ -768,7 +873,7 @@ ps aux | grep mission_bridge
 ├─ [Windows]  方式 A（推荐）: mirrored IP + 防火墙放行 UDP 8189
 │             flutter run -d emulator-5554 --dart-define=AMR_HOST=<wsl_ip>
 │             方式 B（退化）: adb reverse tcp:9090/1884/8889/18554
-│             flutter run -d emulator-5554                 ← 自动退化为 RTSP
+│             flutter run -d emulator-5554                 ← WebRTC 不通时需手动切 RTSP
 │
 └─ [WSL/Windows]  flutter build web --dart-define=AMR_HOST=localhost
                   cd build/web && python3 -m http.server 8081
@@ -800,6 +905,8 @@ rm -f /tmp/amr_trace.jsonl /tmp/amr-gst-registry.bin
 | Windows 侧操作手册 | [WINDOWS侧操作手册.md](WINDOWS侧操作手册.md) | 模拟器 adb reverse / AMR_HOST / 防火墙 / 自检与故障对照 |
 | 视频流全链路 | [视频流全链路.md](视频流全链路.md) | Gazebo 相机 → ROS 2 → GStreamer → MediaMTX → Flutter App 逐跳讲解；WebRTC/RTSP/HLS/rosbridge 四通路对比；Windows 构建副本同步与漂移校验 |
 | Web 大屏操作手册 | [WEB大屏操作手册.md](WEB大屏操作手册.md) | Windows 副本启动命令、地址与路由、端口自检、故障对照、常见坑、生产部署 |
+| AI 任务分流 | [AI-ROUTING.md](AI-ROUTING.md) | 按 10 类任务给出「先读文件:行 → 不要读 → 验证」，AI 协作入口 |
+| AI 需求模板 | [AI-需求模板.md](AI-需求模板.md) | 用户填目标/现象/期望/范围的最小模板 |
 
 ***
 

@@ -449,7 +449,7 @@ PY
 
 ```powershell
 # Windows PowerShell：把 WSL 源码同步到构建副本
-robocopy \\wsl$\Ubuntu\home\dxw\amr\amr_app C:\Users\dxw\Documents\dev\amr_app /MIR /XD .dart_tool build .git
+robocopy \\wsl$\Ubuntu\home\dxw\amr\amr_app C:\Users\dxw\Documents\dev\amr_app /E /XD .dart_tool build .git
 ```
 
 ### 9.2 主机地址选择
@@ -457,7 +457,7 @@ robocopy \\wsl$\Ubuntu\home\dxw\amr\amr_app C:\Users\dxw\Documents\dev\amr_app /
 | 方式 | AMR_HOST | 说明 |
 |---|---|---|
 | WSL mirrored 网络（推荐） | `192.168.0.103`（`hostname -I` 查） | WebRTC UDP 8189 可直达，视频最稳 |
-| `adb reverse` | `127.0.0.1` | 只反向 TCP（9090/1884/8889/18554），**WebRTC UDP 不通**，视频会退化为 RTSP/JPEG |
+| `adb reverse` | `127.0.0.1` | 只反向 TCP（9090/1884/8889/18554），**WebRTC UDP 不通**，App 不会自动切源，需在相机页手动切到 RTSP/JPEG |
 
 ### 9.3 启动
 

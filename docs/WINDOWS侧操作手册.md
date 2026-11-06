@@ -14,7 +14,7 @@
 2. Windows 防火墙对 WSL 端口的入站放行；
 3. App 启动时注入的 `AMR_HOST`（决定 App 去连哪个 IP）。
 
-App 代码里的默认值是 `AMR_HOST=127.0.0.1`、`rosbridgePort=9090`（见 `lib/core/constants.dart`）。在 Windows 上跑普通桌面程序时这是对的，但**在 Android 模拟器里，`127.0.0.1` 指的是模拟器自己，不是 Windows，更不是 WSL**。所以只要没做端口映射或指错 IP，App 就表现为：
+App 代码里的默认值是 `AMR_HOST=127.0.0.1`、`rosbridgeWsPort=9090`（见 `lib/core/constants.dart`）。在 Windows 上跑普通桌面程序时这是对的，但**在 Android 模拟器里，`127.0.0.1` 指的是模拟器自己，不是 Windows，更不是 WSL**。所以只要没做端口映射或指错 IP，App 就表现为：
 
 - 顶栏 `WS` / `MQTT` 两个指示灯是灰色；
 - 地图页一直停在「等待地图数据…」；
@@ -29,7 +29,7 @@ App 代码里的默认值是 `AMR_HOST=127.0.0.1`、`rosbridgePort=9090`（见 `
 **Android 模拟器每重启一次，下面的 4 条就要重做一次。** 打开 PowerShell（Windows 原生终端，不要用 WSL 里的 shell）：
 
 ```powershell
-# adb 全路径（与 C:\Users\dxw\AppData\Local\Android\Sdk\platform-tools\adb.exe 是同一份，实测两个路径都可用）
+# adb 全路径（SDK 唯一入口是 C:\Users\dxw\fvm\android-sdk；C:\Users\dxw\AppData\Local\Android\Sdk 只作为 emulator/system-images 的 junction 实体，不要直接用那个路径）
 $adb = 'C:\Users\dxw\fvm\android-sdk\platform-tools\adb.exe'
 
 # 1) rosbridge（App 的 WebSocket 主通道，地图/指令都走这里）
@@ -60,7 +60,7 @@ host-15 tcp:18554 tcp:18554
 **需要重启 App 吗？**
 不需要。App 的 rosbridge 客户端断开后每 2 秒自动重连（`lib/comm/rosbridge_client.dart`），规则加上后几秒内 `WS` 灯就会变绿。
 
-> ⚠️ `adb reverse` 只支持 TCP、不支持 UDP，所以 WebRTC（UDP 8189）拿不到 ICE 候选，视频会自动退化为 RTSP（TCP），画面可用但延迟比方式 A 高 100~200ms。
+> ⚠️ `adb reverse` 只支持 TCP、不支持 UDP，所以 WebRTC（UDP 8189）拿不到 ICE 候选，视频**不会自动切源**：不会自己退到 RTSP/HLS，需要在 App 的相机页手动切换到「RTSP（TCP 兼容）」选项（或改用 Web 端），画面可用但延迟比方式 A 高 100~200ms。
 > 如果你对视频延迟敏感，用下面的方式 A。
 
 ***
@@ -110,7 +110,7 @@ flutter run -d emulator-5554 --dart-define=AMR_HOST=$wslIp
 |---|---|---|
 | 配置成本 | 高（防火墙需管理员 + 改启动命令 + 重启 App） | 低（4 条命令，App 不用动） |
 | 模拟器重启后 | 不用重做（IP 不变时） | **必须重做** |
-| WebRTC 视频（UDP 8189） | 直连，低延迟 | 不支持 UDP，退化 RTSP，+100~200ms |
+| WebRTC 视频（UDP 8189） | 直连，低延迟 | 不支持 UDP，WebRTC 失败；需手动切 RTSP，+100~200ms |
 | 适合场景 | 长期开发 / 对视频延迟敏感 | 临时演示、快速恢复现场 |
 
 ### 2.5 为什么不能用 `10.0.2.2`
@@ -199,7 +199,7 @@ ros2 topic info -v /map | grep -E 'Publisher count|Subscription count|Node name'
 | `WS` 灯绿、`MQTT` 灯灰 | `1884` 没映射，或 WSL 里 mosquitto 没起来 | 补 `adb reverse tcp:1884`；`ss -lntp` 看 1884；看 `~/arm_logs/<最新>/mosquitto.log` |
 | `WS`、`MQTT` 都绿，地图仍空白 | `/map` 没发布 / `map_server` 未 active | `ros2 lifecycle get /map_server`；`ros2 lifecycle set /map_server activate`；再按 §3.4 查 |
 | 地图有了，但机器人不在原点 / 无 TF | AMCL 没收到初始位姿 | 重跑 `./amr_start.sh`，或按 RUNBOOK §2.4 补发 `/initialpose`（脚本已带协方差+重试） |
-| 视频页无画面 | `8889`（WHEP）/ `18554`（RTSP）没映射；或 UDP 8189 被挡 | 补 reverse；方式 B 下接受退化为 RTSP |
+| 视频页无画面 | `8889`（WHEP）/ `18554`（RTSP）没映射；或 UDP 8189 被挡 | 补 reverse；方式 B 下需在 App 相机页手动切到 RTSP |
 | 刚才还好，模拟器重启后又不行 | `adb reverse` 规则随模拟器重启丢失 | 重跑 §1 |
 | 改了 `AMR_HOST` 但没变化 | 它是编译期常量 | 必须重新 `flutter run` / 重装 APK |
 
@@ -209,8 +209,8 @@ ros2 topic info -v /map | grep -E 'Publisher count|Subscription count|Node name'
 
 | 项 | 值 |
 |---|---|
-| adb | `C:\Users\dxw\fvm\android-sdk\platform-tools\adb.exe`（与 `C:\Users\dxw\AppData\Local\Android\Sdk\platform-tools\adb.exe` 是同一份，两个路径都实测存在） |
-| 启动模拟器 | `& 'C:\Users\dxw\AppData\Local\Android\Sdk\emulator\emulator.exe' -avd Small_Phone` |
+| adb | `C:\Users\dxw\fvm\android-sdk\platform-tools\adb.exe`（SDK 唯一入口；`C:\Users\dxw\AppData\Local\Android\Sdk` 只作为 junction 实体，不要直接用） |
+| 启动模拟器 | `& 'C:\Users\dxw\fvm\android-sdk\emulator\emulator.exe' -avd Small_Phone` |
 | Flutter SDK | `C:\Users\dxw\fvm\flutter` |
 | JDK 21（构建用） | `C:\Users\dxw\.jdks\jbr-21.0.11` |
 | Flutter 构建副本 | `C:\Users\dxw\Documents\dev\amr_app` |

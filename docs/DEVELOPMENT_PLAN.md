@@ -175,7 +175,7 @@
 - [x] `mosquitto_pub -t amr/cmd/mode -m '{"mode":"auto"}'` 后 ROS 端收到对应 topic
 - [x] ROS 端发布电池状态后，`mosquitto_sub -t amr/status/battery` 能收到（retained，1Hz）
 
-**交接备注**：✅ 2026-10-27 MQTT 双向链路验证通过（命令下行 + battery/mode 状态上行 retained）。⚠️ **关键修复**：MQTT 上行一度无消息，根因是 /clock 未桥接——所有节点 use_sim_time=true 但 /clock 无发布者，inspection_node 的 1Hz 定时器（sim time）从不触发，/battery/state 从不发布。已在 bridge_topics.yaml 增加 /clock 桥（rosgraph_msgs/Clock ← gz.msgs.Clock, GZ_TO_ROS）。mosquitto 当前绑 localhost，App 真机联调前需 `sudo` 改绑 0.0.0.0。
+**交接备注**：✅ 2026-10-27 MQTT 双向链路验证通过（命令 App → 机器人 + battery/mode 状态 机器人 → App retained）。⚠️ **关键修复**：MQTT 状态上报一度无消息，根因是 /clock 未桥接——所有节点 use_sim_time=true 但 /clock 无发布者，inspection_node 的 1Hz 定时器（sim time）从不触发，/battery/state 从不发布。已在 bridge_topics.yaml 增加 /clock 桥（rosgraph_msgs/Clock ← gz.msgs.Clock, GZ_TO_ROS）。mosquitto 当前绑 localhost，App 真机联调前需 `sudo` 改绑 0.0.0.0。
 
 ---
 
@@ -261,7 +261,7 @@
 **验收标准**：
 - [x] 电量低于 20% 时 AMR 自动驶向充电桩（initial_level=21 验证，静止放电触发）
 - [x] 到达充电桩后电量开始上升（charging:true，约 2 分钟充满模型）
-- [ ] App 弹出低电量告警（待真机联调，/amr/alert MQTT 上行已验证）
+- [ ] App 弹出低电量告警（待真机联调，/amr/alert 上报链路已验证）
 - [x] 充电完成后 AMR 恢复自动模式（95% 阈值，日志"充电完成，恢复 AUTO"）
 
 **交接备注**：电池为 inspection_node 内软件仿真（非 gz 插件），dock 坐标用 ROS 参数 dock_x/dock_y 配置。✅ 2026-10-27 全链路验证通过：21% 初始电量 → 20% 触发 LOW_BATTERY 告警（MQTT）→ 自动切 CHARGING → NavigateToPose 至 dock → 到达充电 → 95% 自动回 AUTO，MQTT 状态全程 1Hz 上报。修复记录：① dock 默认点 (-4.4,-3.4) 距充电桩立柱 (-4.7,-3.4) 仅 0.3m < inflation_radius 0.4 导致 NavFn 恒失败，已改 (-4.1,-3.4)（仍在标记区内）；② 新增 initial_level 参数（默认 100）便于低电量场景测试；③ _on_tick dt 钳位 ≤5s，防 use_sim_time 启动跳变瞬间放电误触发。如后续要更真实的电量物理，可换 gz Battery 插件。
@@ -320,7 +320,7 @@
 
 **P0~P10 运行验证与全链路排障 - 2026-10-27**：
 - 做了什么：P0 依赖全部安装；P1~P8 逐一运行验证通过（P3 产出 indoor.pgm 地图，P4 导航 (2,1) 成功，P5 MQTT 双向链路通，P7 两点巡检，P8 低电量回充全链路）。仿真端全链路（建图→导航→巡检→回充）已通。
-- 关键修复：① **/clock 未桥接导致 MQTT 上行无消息**——use_sim_time 节点定时器不触发，bridge_topics.yaml 增加 /clock 桥解决；② dock 点 (-4.4,-3.4) 陷入充电桩立柱膨胀区导致 NavFn 恒失败，改 (-4.1,-3.4)；③ inspection_node 新增 initial_level 参数 + dt 钳位 ≤5s 防启动跳变误放电。
+- 关键修复：① **/clock 未桥接导致 MQTT 状态上报无消息**——use_sim_time 节点定时器不触发，bridge_topics.yaml 增加 /clock 桥解决；② dock 点 (-4.4,-3.4) 陷入充电桩立柱膨胀区导致 NavFn 恒失败，改 (-4.1,-3.4)；③ inspection_node 新增 initial_level 参数 + dt 钳位 ≤5s 防启动跳变误放电。
 - 遇到的坑：① Nav2 lifecycle 须在 /initialpose 后激活，顺序错了需手动 activate 8 节点；② costmap clear 服务名是 `/global_costmap/clear_entirely_global_costmap`（单层），写错两层路径会报 "rcl node's context is invalid"（不是服务挂死）；③ ROS launch 需 `export ROS_LOG_DIR=/tmp/ros_log`；④ gz 真值经 /gz_truth（TFMessage，frame 名丢失，取 transforms[0]）。
 - 遗留：~~P9 compressed 图桥~~ 已解决（image_transport republish 方案，见 P9 备注）；mosquitto 需 sudo 绑 0.0.0.0；Flutter 真机联调在 Windows 侧进行。
 

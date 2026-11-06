@@ -6,7 +6,7 @@ import '../../core/constants.dart';
 /// MQTT 客户端单例，常驻，自动重连。
 final mqttClientProvider = Provider<AppMqttClient>((ref) {
   final client =
-      AppMqttClient(host: AppConstants.host, port: AppConstants.mqttPort);
+      AppMqttClient(host: AppConstants.host, port: AppConstants.mqttTcpPort);
   client.connect();
   ref.onDispose(client.dispose);
   return client;

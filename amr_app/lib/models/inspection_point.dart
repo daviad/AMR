@@ -1,48 +1,9 @@
+import 'package:amr_contracts/amr_contracts.dart';
 import 'package:hive/hive.dart';
 
+export 'package:amr_contracts/amr_contracts.dart' show InspectionPoint;
+
 /// 巡检点（Hive typeId 0），手写 TypeAdapter。
-class InspectionPoint {
-  const InspectionPoint({
-    required this.id,
-    required this.name,
-    required this.x,
-    required this.y,
-    required this.theta,
-    this.dwellTime = 3,
-    this.capturePhoto = false,
-  });
-
-  final String id;
-  final String name;
-  final double x;
-  final double y;
-  final double theta;
-
-  /// 停留时间（秒）
-  final int dwellTime;
-
-  /// 到达后是否拍照
-  final bool capturePhoto;
-
-  InspectionPoint copyWith({
-    String? name,
-    double? x,
-    double? y,
-    double? theta,
-    int? dwellTime,
-    bool? capturePhoto,
-  }) =>
-      InspectionPoint(
-        id: id,
-        name: name ?? this.name,
-        x: x ?? this.x,
-        y: y ?? this.y,
-        theta: theta ?? this.theta,
-        dwellTime: dwellTime ?? this.dwellTime,
-        capturePhoto: capturePhoto ?? this.capturePhoto,
-      );
-}
-
 class InspectionPointAdapter extends TypeAdapter<InspectionPoint> {
   @override
   final int typeId = 0;

@@ -100,7 +100,8 @@ sudo apt install -y \
 │  │                    Communication Layer                        │   │
 │  │  ┌─────────────────┐  ┌────────────────┐  ┌───────────────┐  │   │
 │  │  │ RosbridgeWSClient│  │   MqttClient   │  │  TopicMapping │  │   │
-│  │  │  (数据下行)       │  │ (命令上行+状态) │  │  (统一路由)    │  │   │
+│  │  │  机器人→App      │  │  App→机器人     │  │  (统一路由)    │  │   │
+│  │  │                  │  │  机器人→App     │  │               │  │   │
 │  │  └─────────────────┘  └────────────────┘  └───────────────┘  │   │
 │  └──────────────────────────────────────────────────────────────┘   │
 └──────────────────────────────────────────────────────────────────────┘
@@ -235,7 +236,7 @@ Gazebo Sim
 | 数据类型 | 通道 | QoS | 理由 |
 |---|---|---|---|
 | `/map`、`/scan`、`/tf`、`/odom`、`/plan`、摄像头 | rosbridge (WS) | 尽力而为 | 高频流式数据，低延迟 |
-| 目标点 `/goal_pose` | rosbridge + MQTT 双发 | MQTT QoS 1 | rosbridge 低延迟，MQTT 可靠备份 |
+| 导航目标 `amr/cmd/goal` | MQTT 单通道 | MQTT QoS 1 | 唯一权威通道，cmd_id 幂等，避免双通道重复执行 |
 | 巡检启动/停止、急停、模式切换、回充 | MQTT | QoS 1 | 控制命令，必须送达 |
 | 电量、巡检进度、模式、告警 | MQTT | QoS 0 | 状态通知，允许丢失 |
 
@@ -347,7 +348,7 @@ lib/
 
 ```dart
 class TopicMapping {
-  // ── 数据下行（rosbridge 订阅）──
+  // ── 机器人 → App（rosbridge 订阅）──
   static const map = '/map';
   static const scan = '/scan';
   static const tf = '/tf';
@@ -356,7 +357,7 @@ class TopicMapping {
   static const cameraCompressed = '/camera/image_raw/compressed';
   static const amclPose = '/amcl_pose';
 
-  // ── 命令上行（MQTT publish，QoS 1）──
+  // ── App → 机器人（MQTT publish，QoS 1）──
   static const cmdGoal = 'amr/cmd/goal';
   static const cmdInspectionStart = 'amr/cmd/inspection/start';
   static const cmdInspectionStop = 'amr/cmd/inspection/stop';
@@ -364,7 +365,7 @@ class TopicMapping {
   static const cmdEStop = 'amr/cmd/estop';
   static const cmdReturnCharge = 'amr/cmd/return_charge';
 
-  // ── 状态上行（MQTT subscribe，QoS 0）──
+  // ── 机器人 → App（MQTT subscribe，QoS 0）──
   static const statusBattery = 'amr/status/battery';
   static const statusInspection = 'amr/status/inspection';
   static const statusMode = 'amr/status/mode';
@@ -400,11 +401,10 @@ class TopicMapping {
   │ 用户确认
   ▼
 NavigationService.navigateTo(x, y, theta)
-  ├─ rosbridge.publish('/goal_pose', PoseStamped)   ← 低延迟直达 Nav2
-  └─ mqtt.publish('amr/cmd/goal', {x,y,theta}, QoS 1) ← 可靠备份
+  └─ mqtt.publish('amr/cmd/goal', {x,y,theta}, QoS 1) ← 唯一权威通道（App → 机器人，cmd_id 幂等）
   │
   ▼
-仿真端 mqtt_client → ROS2 /goal_pose → Nav2
+仿真端 mqtt_client → /amr/cmd/goal → mission_bridge → NavigateToPose Action → Nav2
   │
   ▼
 rosbridge 推送 /plan → MapView 绘制路径
@@ -644,13 +644,13 @@ Web build/web ┘
 
 | ROS Topic | 类型 | 方向 | 频率 |
 |---|---|---|---|
-| `/map` | nav_msgs/OccupancyGrid | 下行 | 地图更新时 |
-| `/scan` | sensor_msgs/LaserScan | 下行 | 10-40Hz |
-| `/tf` | tf2_msgs/TFMessage | 下行 | 50-100Hz |
-| `/odom` | nav_msgs/Odometry | 下行 | 50Hz |
-| `/plan` | nav_msgs/Path | 下行 | 规划更新时 |
-| `/camera/image_raw/compressed` | sensor_msgs/CompressedImage | 下行 | **仅拍照按需** |
-| `/amcl_pose` | geometry_msgs/PoseWithCovarianceStamped | 下行 | 10Hz |
+| `/map` | nav_msgs/OccupancyGrid | 机器人 → App | 地图更新时 |
+| `/scan` | sensor_msgs/LaserScan | 机器人 → App | 10-40Hz |
+| `/tf` | tf2_msgs/TFMessage | 机器人 → App | 50-100Hz |
+| `/odom` | nav_msgs/Odometry | 机器人 → App | 50Hz |
+| `/plan` | nav_msgs/Path | 机器人 → App | 规划更新时 |
+| `/camera/image_raw/compressed` | sensor_msgs/CompressedImage | 机器人 → App | **仅拍照按需** |
+| `/amcl_pose` | geometry_msgs/PoseWithCovarianceStamped | 机器人 → App | 10Hz |
 
 > 导航不再使用 rosbridge `/goal_pose`；控制命令统一走 MQTT（见 5.2），避免双通道重复执行。
 

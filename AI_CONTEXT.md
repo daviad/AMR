@@ -15,7 +15,7 @@
 | 仿真 | Gazebo Sim 8.15.0（**gz-sim8，非 Classic**） |
 | SLAM | Cartographer 2D |
 | 导航 | Nav2（AMCL + 规划器 + 行为树） |
-| 通信 A | rosbridge-suite（WebSocket，数据下行） |
+| 通信 A | rosbridge-suite（WebSocket，机器人 → App） |
 | 通信 B | mosquitto + ros-jazzy-mqtt-client（命令/状态，QoS） |
 | 上位机 | Flutter（手机 App，横屏优先） |
 | 状态 | Riverpod（代码生成） |
@@ -41,6 +41,7 @@
 │       ├── amr_comm/        # rosbridge + MQTT
 │       └── amr_bringup/     # 一键启动
 └── amr_app/                 # Flutter 工程（上位机）
+    └── packages/amr_contracts/  # 共享契约包（topic 与消息模型真实定义处）
 ```
 
 ## 4. ⚠️ 易错点（AI 必看）
@@ -49,14 +50,14 @@
 2. **ROS2 xacro 路径**：不用 `$(find pkg)`，用 launch 里 `ament_index_python.get_package_share_directory()` 拼绝对路径。
 3. **robot_state_publisher 参数**：`robot_description` 走 `parameters=[...]`，不是 `arguments`。
 4. **MQTT 桥**：Jazzy 用 `ros-jazzy-mqtt-client`（非 mqtt_bridge）。配置 topic 映射用 YAML。
-5. **通信分工**：rosbridge=高频数据下行（地图/雷达/TF/位姿）+ 拍照单帧；MQTT=命令上行(QoS1)+回执/状态上行。目标点**只走 MQTT 单通道**，禁止 rosbridge 双发（会重复执行物理动作）。
+5. **通信分工**：rosbridge=高频数据（机器人 → App，地图/雷达/TF/位姿）+ 拍照单帧；MQTT=命令（App → 机器人，QoS1）+ 回执/状态（机器人 → App）。目标点**只走 MQTT 单通道**，禁止 rosbridge 双发（会重复执行物理动作）。
 6. **模式状态机**：仿真端单一入口，App 只展示不决策。非法流转拒绝。
-7. **WSL 网络**：App 连仿真端用 WSL IP（`hostname -I`），非 localhost。
+7. **WSL 网络**：App 连仿真端用 WSL IP（`hostname -I`），非 localhost；Windows 一键脚本 `-AmrHost auto` 默认取 WSL `eth0` IPv4（镜像模式下即局域网 IP），`adb reverse` 只能转发 TCP，UDP 8189 过不去，模拟器视频必须用 LAN IP。
 8. **Riverpod**：不依赖 BuildContext。流数据用 `StreamProvider`，命令用 `Notifier`。
 
 ## 5. 通信契约速查
 
-**rosbridge topics**：`/map` `/scan` `/tf` `/odom` `/plan` `/amcl_pose`（下行）；`/camera/image_raw/compressed`（仅拍照按需）
+**rosbridge topics**：`/map` `/scan` `/tf` `/odom` `/plan` `/amcl_pose`（机器人 → App）；`/camera/image_raw/compressed`（仅拍照按需）
 
 **MQTT topics**：
 - 命令(QoS1)：`amr/cmd/goal`（信封含 cmd_id/trace_id/timestamp_ms/ttl_ms）`amr/cmd/cancel` `amr/cmd/inspection/start` `amr/cmd/inspection/stop` `amr/cmd/mode` `amr/cmd/estop` `amr/cmd/return_charge`
@@ -121,5 +122,5 @@ P0 环境确认(✅已完成) → P1 底盘+传感器 → P2 遥控验证 → P3
 ```bash
 source /opt/ros/jazzy/setup.bash
 colcon build --symlink-install && source install/setup.bash
-hostname -I   # 获取 WSL IP 供 App 连接
+hostname -I   # 获取 WSL IP 供 App 连接（-AmrHost auto 默认取 eth0 IPv4；视频必须用 LAN IP，UDP 8189 不能 reverse）
 ```

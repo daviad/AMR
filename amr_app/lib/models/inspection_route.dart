@@ -1,36 +1,9 @@
+import 'package:amr_contracts/amr_contracts.dart';
 import 'package:hive/hive.dart';
 
+export 'package:amr_contracts/amr_contracts.dart' show InspectionRoute;
+
 /// 巡检路线（Hive typeId 1），手写 TypeAdapter。
-class InspectionRoute {
-  const InspectionRoute({
-    required this.id,
-    required this.name,
-    required this.pointIds,
-    this.loop = false,
-  });
-
-  final String id;
-  final String name;
-
-  /// 巡检点 id 列表，按执行顺序
-  final List<String> pointIds;
-
-  /// 是否循环执行
-  final bool loop;
-
-  InspectionRoute copyWith({
-    String? name,
-    List<String>? pointIds,
-    bool? loop,
-  }) =>
-      InspectionRoute(
-        id: id,
-        name: name ?? this.name,
-        pointIds: pointIds ?? this.pointIds,
-        loop: loop ?? this.loop,
-      );
-}
-
 class InspectionRouteAdapter extends TypeAdapter<InspectionRoute> {
   @override
   final int typeId = 1;
@@ -44,8 +17,7 @@ class InspectionRouteAdapter extends TypeAdapter<InspectionRoute> {
     return InspectionRoute(
       id: fields[0] as String,
       name: fields[1] as String,
-      pointIds:
-          (fields[2] as List?)?.cast<String>() ?? const <String>[],
+      pointIds: (fields[2] as List?)?.cast<String>() ?? const <String>[],
       loop: fields[3] as bool? ?? false,
     );
   }

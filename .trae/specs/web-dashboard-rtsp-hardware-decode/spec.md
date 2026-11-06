@@ -1,5 +1,7 @@
 # 规格：Web 后台大屏 + RTSP 视频流 + 硬解码
 
+> ⚠️ **状态：已归档（2026-10-28 历史规格）**。当前实现已不同：RTSP `18554`、HLS `18888`、WHEP `8889`（ICE `8189`），路径 `camera` / `camera_low`；App 主视频走 WHEP，HLS 供大屏页，RTSP 为手动兜底；`/dashboard` 是 Android/Web 共享路由。权威说明见 `docs/RUNBOOK.md` §3.7 与 `docs/视频流全链路.md`。
+
 ## 问题陈述
 
 当前 AMR 系统仅通过 Android App 访问，视频流仅支持 rosbridge CompressedImage（JPEG 软解）。需要：

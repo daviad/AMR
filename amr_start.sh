@@ -636,11 +636,14 @@ if verify_all; then
   c_ok "仿真端已就绪。日志：$LOG_DIR"
   echo "  下次单独验证：source $ROS_SETUP && source $WS_SETUP && ros2 node list"
   echo "  停止并清理：$SCRIPT_DIR/amr_start.sh --stop"
-  echo "  提示：Flutter App / Web 大屏属于 Windows 侧步骤（RUNBOOK §3），请单独执行。"
+  echo "  下一步（Windows 侧，与本脚本同目录）："
+  echo "    App： powershell.exe -ExecutionPolicy Bypass -File .\amr_start_windows.ps1"
+  echo "    Web： powershell.exe -ExecutionPolicy Bypass -File .\amr_web_start.ps1"
+  echo "  说明见 RUNBOOK §3.7（一键脚本）"
   exit 0
 else
   section "启动失败：可能原因（RUNBOOK §6）"
-  echo "  Q1  MQTT 无上行：/clock 未桥接 → 查 src/amr_gazebo/config/bridge_topics.yaml"
+  echo "  Q1  MQTT 状态上报无消息：/clock 未桥接 → 查 src/amr_gazebo/config/bridge_topics.yaml"
   echo "  Q2  Nav2 未激活：/initialpose 未发或 AMCL 未收敛 → 重跑本脚本"
   echo "  Q9  GLIBCXX 报错：务必 env -u LD_LIBRARY_PATH（脚本已处理）"
   echo "  Q11 GStreamer 断流：清 /tmp/amr-gst-registry.bin 后重启（脚本已顺手清）"

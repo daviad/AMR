@@ -1,4 +1,4 @@
-"""rosbridge WebSocket 服务启动（端口 9090，供 Flutter 订阅数据下行）"""
+"""rosbridge WebSocket 服务启动（端口 9090）；供 Flutter 订阅（机器人 → App）"""
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
 from launch.substitutions import LaunchConfiguration
