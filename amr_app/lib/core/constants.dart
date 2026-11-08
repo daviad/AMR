@@ -13,8 +13,11 @@ class AppConstants {
   // `/camera/image_raw/compressed`（拍照单帧，不是视频流）。App 与 Web 大屏共用；
   // 无鉴权，禁止直接暴露公网。服务端：`amr_comm/launch/rosbridge.launch.py`
   static const int rosbridgeWsPort = 9090;
-  // `mosquitto` TCP 监听。`amr/cmd/*`（App → 机器人，QoS 1）；`amr/cmd/ack|feedback|result`、
-  // `amr/status/*`、`amr/alert`、`amr/trace`（机器人 → App，QoS 0）。移动端走此口；配置：`amr_comm/config/mosquitto.conf:3`
+  // `mosquitto` TCP 监听。`amr/cmd/*`（App → 机器人，QoS 1）；上行 `amr/cmd/ack`、`amr/cmd/result`（机器人 → App，QoS 1），
+  // 而 `amr/cmd/feedback`、`amr/status/*`、`amr/alert`、`amr/trace`（机器人 → App，QoS 0）。移动端走此口；配置：`amr_comm/config/mosquitto.conf:3`
+  // 上行分级原因：`ack`/`result` 是状态机的关键回执（`result` 为终态），丢一次就只能等超时兜底、UI 卡在中间态，
+  // 故用 QoS 1 保证至少送达一次；`feedback` 是心跳式进度帧（`nav_state`/剩余距离），本身周期性重发，
+  // 丢一帧不影响终态判定，用 QoS 0 省掉重传与带宽。
   static const int mqttTcpPort = 1884;
   // 同一个 broker 的 WebSocket 监听（不是第二个 broker），供浏览器（Web 大屏）使用，
   // 因为浏览器不能开原生 TCP。配置：`mosquitto.conf:6-7`

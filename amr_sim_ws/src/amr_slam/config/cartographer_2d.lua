@@ -15,7 +15,11 @@ options = {
   -- 使用轮式里程计作为先验（P1）。
   -- 前提：odom 的两个缺陷已修复——(1) DiffDrive 锁存最后一条非零指令，
   -- 已加 cmd_vel 看门狗；(2) 前脚轮摩擦导致原地旋转只有 ~40% 实际转角，
-  -- 已把 front_caster_link 的 mu1/mu2 置 0。修复后 odom/真值偏航比 >0.95。
+  -- 已把 front_caster_link 的 mu1/mu2 置 0。
+  -- 2026-11-07 复测：原地 90°/180° 转向下 车体真值/odom 偏航比仍为 1.11
+  -- （A/B：mu=1 时为 0.56，扭矩 2→10 无变化，真万向轮结构反而更差 0.79），
+  -- 即残余 ~10% 属 gz 轮-地接触固有滑移。Cartographer 靠 IMU(tracking_frame=imu_link)
+  -- 提供旋转，odom 只做平移先验，故建图不受该残差影响；AMCL 侧靠提高更新频率吸收。
   -- 关掉 odom 时 scan matching 在长直墙方向会几何退化，实测 x 向漂移 34m。
   use_odometry = true,
   use_nav_sat = false,

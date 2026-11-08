@@ -8,11 +8,29 @@ amcl:
     scan_topic: /scan
     min_particles: 500
     max_particles: 2000
-    update_min_d: 0.2
-    update_min_a: 0.2
+    # 实测：轮式 odom 在原地转向时偏航误差 10~25%/圈（车体与轮子转角不一致，
+    # 见 odom 标定数据）。更新阈值 0.2m/0.2rad 会让 AMCL 在转向过程中长时间
+    # 只用坏 odom 外推，实测表现为转完弯后位姿"跳一下"。降到 0.1/0.1 提高
+    # 转向过程的量测修正频率。
+    update_min_d: 0.1
+    update_min_a: 0.1
+    # 旋转过程噪声调大，让粒子云覆盖转向滑移的不确定性（alpha3/alpha4 为
+    # 旋转相关分量）。默认 0.2 在 odom 偏航误差 20% 时粒子云过窄，会跟丢。
+    alpha1: 0.3
+    alpha2: 0.3
+    alpha3: 0.4
+    alpha4: 0.4
     laser_max_range: 12.0
     laser_min_range: 0.12
     laser_model_type: "likelihood_field"
+    # 机器人固定从 (0,0) 出生，且 amr_start.sh 会再发一次 /initialpose；
+    # 显式设置初始位姿，避免 AMCL 重启后无位姿导致重定位场景不可复现。
+    set_initial_pose: true
+    initial_pose:
+      x: 0.0
+      y: 0.0
+      z: 0.0
+      yaw: 0.0
 
 amcl_map_client:
   ros__parameters:
@@ -35,31 +53,53 @@ controller_server:
     controller_plugins: ["FollowPath"]
     progress_checker:
       plugin: "nav2_controller::SimpleProgressChecker"
-      required_movement_radius: 0.5
-      movement_time_allowance: 10.0
+      # 实测问题：DWB 的 xy_goal_tolerance(0.15) 大于 goal_checker 的 0.10，
+      # 机器人在离目标 0.10~0.15 m 的"死区"里只原地旋转、不再平移，
+      # 20 s 内位移不足 0.3 m 即触发 "Failed to make progress" -> abort -> 重试死循环。
+      # 现把进度判定半径降到 0.10（=终点容差，避免死区），超时放宽到 30 s。
+      required_movement_radius: 0.10
+      movement_time_allowance: 30.0
     general_goal_checker:
       stateful: true
       plugin: "nav2_controller::SimpleGoalChecker"
-      xy_goal_tolerance: 0.15
-      yaw_goal_tolerance: 0.25
-    # DWB 局部控制器
+      # 终点精度收紧：直接服务于"目标点终点误差"判定
+      xy_goal_tolerance: 0.10
+      yaw_goal_tolerance: 0.15
+    # DWB 局部控制器（外面包一层 RotationShim）
+    # 实测证据（cmddiag）：当目标在正后方（航向差≈180°）时，DWB 采样在正负角速度之间
+    # 左右对称打平，只能输出 ±0.026 rad/s 的抖动，7.4 m 的直线目标 30 s 内 0 位移，
+    # 随后被 progress_checker 判死 -> abort -> 重试。这类"正后方目标"必须靠
+    # RotationShimController 先原地定向，再交给 DWB 跟踪路径。
     FollowPath:
-      plugin: "dwb_core::DWBLocalPlanner"
+      plugin: "nav2_rotation_shim_controller::RotationShimController"
+      primary_controller: "dwb_core::DWBLocalPlanner"
+      # 航向差超过 45° 就先原地转到路径朝向；转速 0.4 rad/s（<0.5 上限）
+      angular_dist_threshold: 0.785
+      forward_sampling_distance: 0.5
+      rotate_to_heading_angular_vel: 0.4
+      max_angular_accel: 1.0
+      # false 时 shim 会在终点反复"转回路径朝向"，与 DWB 的末端定航向争抢，
+      # 目标航向与接近方向相反时会卡在 30~60° 直到 progress checker 超时（实测 W7 120 s 失败）；
+      # 改 true 只在起步定向一次，末端交给 DWB，W7 复测 43.8 s 成功。
+      rotate_to_heading_once: true
+      use_path_orientations: false
       debug_trajectory_details: true
       min_vel_x: 0.0
       min_vel_y: 0.0
-      max_vel_x: 0.4
+      # 速度按扫地机器人量级收窄（要求 0.2–0.3 m/s、ω≤0.5 rad/s），
+      # 并把加减速减半，避免瞬起瞬停放大原地转向的轮地滑移。
+      max_vel_x: 0.3
       max_vel_y: 0.0
-      max_vel_theta: 1.0
+      max_vel_theta: 0.5
       min_speed_xy: 0.0
-      max_speed_xy: 0.4
+      max_speed_xy: 0.3
       min_speed_theta: 0.0
-      acc_lim_x: 1.0
+      acc_lim_x: 0.5
       acc_lim_y: 0.0
-      acc_lim_theta: 2.0
-      decel_lim_x: -1.0
+      acc_lim_theta: 1.0
+      decel_lim_x: -0.5
       decel_lim_y: 0.0
-      decel_lim_theta: -2.0
+      decel_lim_theta: -1.0
       vx_samples: 20
       vy_samples: 1
       vtheta_samples: 20
@@ -67,8 +107,12 @@ controller_server:
       linear_granularity: 0.05
       angular_granularity: 0.025
       transform_tolerance: 0.2
-      xy_goal_tolerance: 0.15
-      trans_stopped_velocity: 0.25
+      # RotateToGoal 的切换半径必须小于 goal_checker 的 xy_goal_tolerance(0.10)，
+      # 否则最后 0.10~0.15 m 只能原地转、永远到不了终点（实测 20 轮全部超时）。
+      xy_goal_tolerance: 0.05
+      # 原 0.25 相对 max_vel_x=0.3 过大，几乎任意速度都被判为"已停"，
+      # RotateToGoal 会提前接管并放弃平移；降到 0.05。
+      trans_stopped_velocity: 0.05
       short_circuit_trajectory_evaluation: true
       stateful: true
       critics: ["RotateToGoal", "Oscillation", "BaseObstacle", "GoalAlign", "PathAlign", "PathDist", "GoalDist"]
@@ -96,7 +140,10 @@ planner_server:
       plugin: "nav2_navfn_planner::NavfnPlanner"
       tolerance: 0.5
       use_astar: false
-      allow_unknown: true
+      # 关键：闭环地图四周存在 unknown 环（12m 雷达建图边界外），
+      # allow_unknown=true 时 NavFn 会把 unknown 当成可通行（代价 253），
+      # 存在"绕过墙端/贴着未知区切角"的规划穿墙风险，改为 false。
+      allow_unknown: false
 
 planner_server_rclcpp_node:
   ros__parameters:
@@ -130,7 +177,10 @@ local_costmap:
       width: 3
       height: 3
       resolution: 0.05
-      robot_radius: 0.22
+      # 底盘真实 0.40×0.30 m，外接半径 0.25；原 robot_radius=0.22 会让四角
+      # 在贴墙时嵌入墙体（RViz 上表现为"贴墙穿模"）。改为真实 footprint
+      # 并留 2cm 余量。
+      footprint: "[[0.22, 0.17], [-0.22, 0.17], [-0.22, -0.17], [0.22, -0.17]]"
       plugins: ["obstacle_layer", "inflation_layer"]
       obstacle_layer:
         plugin: "nav2_costmap_2d::ObstacleLayer"
@@ -160,7 +210,10 @@ global_costmap:
       publish_frequency: 1.0
       global_frame: map
       robot_base_frame: base_link
-      robot_radius: 0.22
+      # 底盘真实 0.40×0.30 m，外接半径 0.25；原 robot_radius=0.22 会让四角
+      # 在贴墙时嵌入墙体（RViz 上表现为"贴墙穿模"）。改为真实 footprint
+      # 并留 2cm 余量。
+      footprint: "[[0.22, 0.17], [-0.22, 0.17], [-0.22, -0.17], [0.22, -0.17]]"
       resolution: 0.05
       track_unknown_space: true
       plugins: ["static_layer", "obstacle_layer", "inflation_layer"]
@@ -223,9 +276,10 @@ behavior_server:
     robot_base_frame: base_link
     transform_tolerance: 0.1
     simulate_ahead_time: 2.0
-    max_rotational_vel: 1.0
-    min_rotational_vel: 0.4
-    rotational_acc_lim: 3.2
+    # 恢复行为也统一到 ≤0.5 rad/s，避免恢复动作把机器人甩出地图
+    max_rotational_vel: 0.5
+    min_rotational_vel: 0.2
+    rotational_acc_lim: 1.0
 
 velocity_smoother:
   ros__parameters:
@@ -233,10 +287,11 @@ velocity_smoother:
     smoothing_frequency: 20.0
     scale_velocities: false
     feedback: "OPEN_LOOP"
-    max_velocity: [0.4, 0.0, 1.0]
-    min_velocity: [-0.4, 0.0, -1.0]
-    max_accel: [1.0, 0.0, 2.0]
-    max_decel: [-1.0, 0.0, -2.0]
+    # 与 DWB/行为树一致的速度包线：0.3 m/s、0.5 rad/s，加减速减半
+    max_velocity: [0.3, 0.0, 0.5]
+    min_velocity: [-0.3, 0.0, -0.5]
+    max_accel: [0.5, 0.0, 1.0]
+    max_decel: [-0.5, 0.0, -1.0]
     odom_topic: "odom"
     odom_duration: 0.1
     deadband_velocity: [0.0, 0.0, 0.0]

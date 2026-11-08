@@ -35,11 +35,13 @@ class InspectionManager:
 
     def _load_demo_data(self):
         """内置演示路线（对应 indoor.world 场景）"""
+        # 2026-11-08 巡检点离墙太近修正：p2/p3/p4 原值 0.15/0.76/0.85 m，
+        # 均改为离最近障碍 >=0.95 m（实测 1.10/1.22/1.15 m），命名与语义不变。
         self._points = {
             'p1': InspectionPoint('p1', '大厅中央', 0.0, 1.5, 0.0),
-            'p2': InspectionPoint('p2', '东房间', 3.0, 1.0, math.pi / 2),
-            'p3': InspectionPoint('p3', '南侧走廊', 0.0, -2.0, math.pi),
-            'p4': InspectionPoint('p4', '西北角', -4.0, 3.0, 0.0),
+            'p2': InspectionPoint('p2', '东房间', 3.95, 1.0, math.pi / 2),
+            'p3': InspectionPoint('p3', '南侧走廊', 0.5, -2.0, math.pi),
+            'p4': InspectionPoint('p4', '西北角', -3.7, 2.8, 0.0),
         }
         self._routes = {
             'route_1': InspectionRoute('route_1', '常规巡检', ['p1', 'p2', 'p3'], False),
