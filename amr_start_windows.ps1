@@ -6,7 +6,7 @@
 #   powershell -ExecutionPolicy Bypass -File "\\wsl.localhost\Ubuntu\home\dxw\amr\amr_start_windows.ps1"
 #   .\amr_start_windows.ps1 -Mode attach          # 改用 flutter run（可热重载，占住终端）
 #   .\amr_start_windows.ps1 -Mode build           # 只构建 APK
-#   .\amr_start_windows.ps1 -NetMode nat          # WSL 为 NAT 模式（用 WSL IP 连 rosbridge）
+#   .\amr_start_windows.ps1 -NetMode nat          # WSL 为 NAT 模式（用 WSL IP 连业务网关 8080/8081）
 #   .\amr_start_windows.ps1 -Clean -NoSync        # 先 flutter clean，且跳过同步
 #   .\amr_start_windows.ps1 -DryRun               # 只打印要做的事，不执行
 #   .\amr_start_windows.ps1 -Help
@@ -26,8 +26,8 @@ param(
     [switch]$DryRun,
     [switch]$Help,
     [string]$Avd = 'Small_Phone',
-    [int]$RosbridgePort = 9090,
-    [int]$MqttPort = 1884,
+    [int]$GatewayHttpPort = 8080,
+    [int]$GatewayWsPort = 8081,
     [int]$WhepPort = 8889,
     [int]$RtspPort = 18554,
     [string]$Project = 'C:\Users\dxw\Documents\dev\amr_app',
@@ -66,7 +66,8 @@ function Show-Help {
   -Flutter <path>       flutter.bat 路径
   -SdkRoot <path>       Android SDK（默认 C:\Users\dxw\fvm\android-sdk）
   -Jdk <path>           Gradle 用 JDK（默认 jbr-21.0.11；不存在时仅警告，继续用当前 JAVA_HOME）
-  -RosbridgePort <n>    默认 9090；-MqttPort <n> 默认 1884
+  -GatewayHttpPort <n>  业务网关 HTTP 端口（默认 8080，App 任务/地图）
+  -GatewayWsPort <n>    业务网关 WS 端口（默认 8081，App 位姿/路径/扫描/状态推送）
   -WhepPort <n>         默认 8889（WHEP 信令，做 adb reverse）
   -RtspPort <n>         默认 18554（RTSP 兜底视频，做 adb reverse）
   -Help                 显示本帮助
@@ -202,8 +203,8 @@ if ($AmrHost -eq 'auto') {
     $hostForApp = $AmrHost
 }
 Section '网络模式判定'
-Info ("-NetMode={0} / -AmrHost={1} → App 连接 rosbridge: {2}:{3}" -f $NetMode, $AmrHost, $hostForApp, $RosbridgePort)
-if ($AmrHost -eq 'auto' -and $NetMode -eq 'mirrored') { Info '  auto + mirrored：取 WSL eth0 IPv4；adb reverse 仍会设置作为 TCP 兜底' }
+Info ("-NetMode={0} / -AmrHost={1} → App 连接网关 HTTP {2}:{3} / WS {2}:{4}" -f $NetMode, $AmrHost, $hostForApp, $GatewayHttpPort, $GatewayWsPort)
+if ($AmrHost -eq 'auto' -and $NetMode -eq 'mirrored') { Info '  auto + mirrored：取 WSL eth0 IPv4；adb reverse（含 8080/8081）仍会设置作为 TCP 兜底' }
 elseif ($AmrHost -eq 'auto') { Info '  auto + nat：优先 eth0 IPv4，解析失败才用 WSL IPv4；adb reverse 一并设置作为兜底' }
 else { Info ("  显式 -AmrHost={0}；adb reverse 仍会设置作为兜底" -f $AmrHost) }
 
@@ -306,24 +307,24 @@ if ($Mode -ne 'build') {
 }
 
 # =============================================================================
-# 5. rosbridge / MQTT 端口与 adb reverse
+# 5. 业务网关 / 视频端口与 adb reverse
 # =============================================================================
 Section '5. 端口与 adb reverse'
-$rbOpen = Test-Port $hostForApp $RosbridgePort
-$mqttOpen = Test-Port $hostForApp $MqttPort
+$gwHttpOpen = Test-Port $hostForApp $GatewayHttpPort
+$gwWsOpen = Test-Port $hostForApp $GatewayWsPort
 $whepOpen = Test-Port $hostForApp $WhepPort
 $rtspOpen = Test-Port $hostForApp $RtspPort
-if ($rbOpen) { Ok ("rosbridge {0}:{1} 可连通" -f $hostForApp, $RosbridgePort) }
-else { Warn ("rosbridge {0}:{1} 不通 —— 请先在 WSL 执行 ./amr_start.sh；App 会显示 WS 未连接" -f $hostForApp, $RosbridgePort) }
-if ($mqttOpen) { Ok ("MQTT {0}:{1} 可连通" -f $hostForApp, $MqttPort) }
-else { Warn ("MQTT {0}:{1} 不通（不影响 App 启动，但导航指令不可用）" -f $hostForApp, $MqttPort) }
+if ($gwHttpOpen) { Ok ("网关 HTTP {0}:{1} 可连通（任务/地图）" -f $hostForApp, $GatewayHttpPort) }
+else { Warn ("网关 HTTP {0}:{1} 不通 —— 请先在 WSL 执行 ./amr_start.sh；App 会显示 GW 离线、地图停在等待" -f $hostForApp, $GatewayHttpPort) }
+if ($gwWsOpen) { Ok ("网关 WS {0}:{1} 可连通（位姿/路径/扫描推送）" -f $hostForApp, $GatewayWsPort) }
+else { Warn ("网关 WS {0}:{1} 不通 —— App 能下任务但看不到实时位姿/路径" -f $hostForApp, $GatewayWsPort) }
 if ($whepOpen) { Ok ("WHEP {0}:{1} 可连通（WebRTC 信令）" -f $hostForApp, $WhepPort) }
-else { Warn ("WHEP {0}:{1} 不通 —— App 主视频会失败；且 WebRTC 的 UDP 8189 无法 adb reverse，只能 -NetMode nat 直连" -f $hostForApp, $WhepPort) }
+else { Warn ("WHEP {0}:{1} 不通 —— App 主视频会失败；WebRTC 的 UDP 8189 无法 adb reverse，手机需用 LAN IP 直连（-AmrHost）" -f $hostForApp, $WhepPort) }
 if ($rtspOpen) { Ok ("RTSP {0}:{1} 可连通（视频兜底）" -f $hostForApp, $RtspPort) }
 else { Warn ("RTSP {0}:{1} 不通 —— App 相机页切到 RTSP 也不会有画面" -f $hostForApp, $RtspPort) }
 
 if ($Mode -ne 'build' -and $serial) {
-    foreach ($p in @($RosbridgePort, $MqttPort, $WhepPort, $RtspPort)) {
+    foreach ($p in @($GatewayHttpPort, $GatewayWsPort, $WhepPort, $RtspPort)) {
         $null = Invoke-Native $adbExe @('-s', $serial, 'reverse', ('tcp:' + $p), ('tcp:' + $p)) -AllowFail
     }
     if (-not $DryRun) {
@@ -331,7 +332,7 @@ if ($Mode -ne 'build' -and $serial) {
         if ($rl) { foreach ($x in $rl) { if ($x) { Info ('  reverse: ' + $x) } } }
         else { Warn 'adb reverse --list 为空：规则可能未生效，检查 adb server 是否被重启' }
     }
-    Info '已设置 adb reverse（TCP 9090/1884/8889/18554）'
+    Info ("已设置 adb reverse（TCP {0}/{1}/{2}/{3}）" -f $GatewayHttpPort, $GatewayWsPort, $WhepPort, $RtspPort)
 }
 
 # =============================================================================
@@ -364,11 +365,14 @@ if ($Mode -eq 'attach') {
 # =============================================================================
 Section '7. 摘要'
 if ($serial) { Info "设备: $serial（AVD $Avd）" } else { Info '设备: 未涉及（-Mode build）' }
-Info ("rosbridge: ws://{0}:{1}（App 内 WS 地址）" -f $hostForApp, $RosbridgePort)
-Info ("MQTT: {0}:{1}（TCP；WS 9002 走浏览器/Web 端）" -f $hostForApp, $MqttPort)
-Info ("视频: RTSP {0}:{1} / WHEP {0}:{2} / HLS {0}:18888（需 WSL 侧 amr_start.sh 已启动）" -f $hostForApp, $RtspPort, $WhepPort)
-if ($rbOpen) { Ok '端口检查通过' } else { Warn 'rosbridge 未连通：先跑 ./amr_start.sh，再执行本脚本' }
-Info '提示：App 首页 WS 未连接 → 先确认 WSL 侧 amr_start.sh 在跑'
-Info ("提示：相机页不出画面 → 确认 App 用的是 LAN IP（当前 {0}），不能用 127.0.0.1" -f $hostForApp)
+Info ("业务网关: HTTP http://{0}:{1} / WS ws://{0}:{2}/ws（App 唯一业务出口）" -f $hostForApp, $GatewayHttpPort, $GatewayWsPort)
+Info ("视频: RTSP {0}:{1} / WHEP {0}:{2} / HLS {0}:18888（直连 MediaMTX，不经网关）" -f $hostForApp, $RtspPort, $WhepPort)
+if ($gwHttpOpen -and $gwWsOpen) { Ok '网关端口检查通过' } else { Warn '网关未连通：先跑 ./amr_start.sh，再执行本脚本' }
+Info '提示：App 顶部 GW/WS 为红 → 先确认 WSL 侧 amr_start.sh 已启动网关（8080/8081）'
+if ($hostForApp -eq '127.0.0.1') {
+    Warn ('提示：当前 AMR_HOST=127.0.0.1，业务可用但 WebRTC/RTSP 视频不可用；看视频请用 -AmrHost <LAN IP> 或 -NetMode nat 配 -WslIp')
+} else {
+    Info ("提示：相机页不出画面 → 确认手机与 {0} 同网段且防火墙放行 8889/18554/18888/UDP 8189" -f $hostForApp)
+}
 
 exit 0

@@ -1,6 +1,6 @@
 # Windows 侧操作手册（AMR 巡检 App）
 
-> 版本：v1.0 | 日期：2026-11-03
+> 版本：v1.1 | 日期：2026-11-08（网关收口：App 走 HTTP 8080 / WS 8081，9090/1884 仅调试）
 > 适用：Windows 11 + WSL2（Ubuntu 24.04）+ Android 模拟器 `Small_Phone` + Flutter App
 > 配套文档：[RUNBOOK.md](RUNBOOK.md)（WSL 仿真端启动）、[CHECK.md](../CHECK.md)（完整验收）
 
@@ -8,19 +8,19 @@
 
 ## 0. 这份手册解决什么问题
 
-`~/amr/amr_start.sh` 只在 WSL 里跑，负责 Gazebo、Nav2、rosbridge、MQTT、视频流这些**仿真端**进程。它**管不到 Windows 侧**的三件事：
+`~/amr/amr_start.sh` 只在 WSL 里跑，负责 Gazebo、Nav2、业务网关（HTTP **8080** / WS **8081**）、mosquitto、视频流这些**仿真端**进程（rosbridge 已降级为网关内部/调试通道）。它**管不到 Windows 侧**的三件事：
 
 1. Android 模拟器与 Windows 主机之间的端口映射（`adb reverse`）；
 2. Windows 防火墙对 WSL 端口的入站放行；
-3. App 启动时注入的 `AMR_HOST`（决定 App 去连哪个 IP）。
+3. App 启动时注入的 `AMR_HOST`（决定 App 去连哪个 IP，**网关 host 也用它**，无需额外的 gateway host 参数）。
 
-App 代码里的默认值是 `AMR_HOST=127.0.0.1`、`rosbridgeWsPort=9090`（见 `lib/core/constants.dart`）。在 Windows 上跑普通桌面程序时这是对的，但**在 Android 模拟器里，`127.0.0.1` 指的是模拟器自己，不是 Windows，更不是 WSL**。所以只要没做端口映射或指错 IP，App 就表现为：
+App 代码里的默认值是 `AMR_HOST=127.0.0.1`、网关 HTTP `8080` / WS `8081`（见 `lib/core/constants.dart` 的 `gatewayHttpPort` / `gatewayWsPort`）。在 Windows 上跑普通桌面程序时这是对的，但**在 Android 模拟器里，`127.0.0.1` 指的是模拟器自己，不是 Windows，更不是 WSL**。所以只要没做端口映射或指错 IP，App 就表现为：
 
-- 顶栏 `WS` / `MQTT` 两个指示灯是灰色；
+- 顶栏 `GW` / `WS` / `MQTT` 三个指示灯是灰色；
 - 地图页一直停在「等待地图数据…」；
 - `adb logcat` 里反复出现 `SocketException: Connection refused, address = 127.0.0.1`。
 
-> 2026-11-03 实测结论：这套环境下仿真端一切正常（`/map` 由 `map_server` 正常发布、lifecycle 为 `active`），问题只在上述 Windows 侧连接链路；补上 `adb reverse` 后 App 在 2 秒内自动重连，地图立刻渲染。
+> 2026-11-03 实测结论：这套环境下仿真端一切正常（`/map` 由 `map_server` 正常发布、lifecycle 为 `active`），问题只在上述 Windows 侧连接链路；补上 `adb reverse` 后 App 在几秒内自动重连（WS 指数退避 2→10s），地图随即渲染。
 
 ***
 
@@ -32,14 +32,18 @@ App 代码里的默认值是 `AMR_HOST=127.0.0.1`、`rosbridgeWsPort=9090`（见
 # adb 全路径（SDK 唯一入口是 C:\Users\dxw\fvm\android-sdk；C:\Users\dxw\AppData\Local\Android\Sdk 只作为 emulator/system-images 的 junction 实体，不要直接用那个路径）
 $adb = 'C:\Users\dxw\fvm\android-sdk\platform-tools\adb.exe'
 
-# 1) rosbridge（App 的 WebSocket 主通道，地图/指令都走这里）
-& $adb reverse tcp:9090  tcp:9090
-# 2) MQTT（TCP 1884，导航指令/状态）
-& $adb reverse tcp:1884  tcp:1884
+# 1) 业务网关 HTTP（App 鉴权/任务/地图/快照，必用）
+& $adb reverse tcp:8080  tcp:8080
+# 2) 业务网关 WS（位姿/路径/扫描/任务状态推送，必用）
+& $adb reverse tcp:8081  tcp:8081
 # 3) WebRTC WHEP 信令（App 主视频）
 & $adb reverse tcp:8889  tcp:8889
 # 4) RTSP 兜底视频
 & $adb reverse tcp:18554 tcp:18554
+
+# 可选（调试用）：rosbridge 9090 / MQTT 1884 不再是 App 通道，只有手动排障时才需要
+# & $adb reverse tcp:9090 tcp:9090
+# & $adb reverse tcp:1884 tcp:1884
 
 # 确认规则已生效
 & $adb reverse --list
@@ -48,17 +52,19 @@ $adb = 'C:\Users\dxw\fvm\android-sdk\platform-tools\adb.exe'
 期望输出类似（`host-xx` 前缀是 adb 内部的 host transport 编号，不同机器可能不同）：
 
 ```
-host-15 tcp:9090 tcp:9090
-host-15 tcp:1884 tcp:1884
+host-15 tcp:8080 tcp:8080
+host-15 tcp:8081 tcp:8081
 host-15 tcp:8889 tcp:8889
 host-15 tcp:18554 tcp:18554
 ```
+
+> `amr_start_windows.ps1` 默认就是这 4 条（`-GatewayHttpPort` / `-GatewayWsPort` / `-WhepPort` / `-RtspPort` 可覆盖），执行脚本后无需再手敲。
 
 **为什么模拟器重启后就失效？**
 `adb reverse` 规则是登记在 adb server 上、绑定到当前模拟器连接（transport，如 `emulator-5554`）的。模拟器一重启就是一条新的 transport，旧规则不会继承；执行 `adb kill-server` 重启 adb server 同样会清空。所以每次开机都要重来一遍。
 
 **需要重启 App 吗？**
-不需要。App 的 rosbridge 客户端断开后每 2 秒自动重连（`lib/comm/rosbridge_client.dart`），规则加上后几秒内 `WS` 灯就会变绿。
+不需要。App 的网关 WS 客户端断开后按指数退避重连（2s → 10s 封顶，`lib/comm/gateway_ws_client.dart`），规则加上后几秒内 `GW` / `WS` 灯就会变绿。
 
 > ⚠️ `adb reverse` 只支持 TCP、不支持 UDP，所以 WebRTC（UDP 8189）拿不到 ICE 候选，视频**不会自动切源**：不会自己退到 RTSP/HLS，需要在 App 的相机页手动切换到「RTSP（TCP 兼容）」选项（或改用 Web 端），画面可用但延迟比方式 A 高 100~200ms。
 > 如果你对视频延迟敏感，用下面的方式 A。
@@ -81,12 +87,17 @@ wsl -d Ubuntu -- hostname -I
 
 ```powershell
 # 管理员 PowerShell 中执行
+# 若之前按旧口径建过 9090/1884 的 AMR-TCP 规则，先删掉再重建
+Get-NetFirewallRule -DisplayName "AMR-TCP" -ErrorAction SilentlyContinue | Remove-NetFirewallRule
+
 New-NetFirewallRule -DisplayName "AMR-TCP" -Direction Inbound -Protocol TCP `
-  -LocalPort 9090,1884,8889,18554,18888 -Action Allow -Profile Private
+  -LocalPort 8080,8081,8889,18554,18888 -Action Allow -Profile Private
 
 New-NetFirewallRule -DisplayName "AMR-WebRTC-UDP" -Direction Inbound -Protocol UDP `
   -LocalPort 8189 -Action Allow -Profile Private
 ```
+
+> `8080`/`8081` 是业务网关（HTTP/WS），App 必用；`8889` 是 WHEP 信令、`18888` 是 HLS、`18554` 是 RTSP。`9090`/`1884`/`9002` 只在调试直连时才有意义，正常业务不放行也不影响 App。
 
 防火墙规则是持久化的，**做一次即可**，重启后仍有效；只有 WSL IP 变了才需要改启动命令里的 IP。
 
@@ -108,7 +119,7 @@ flutter run -d emulator-5554 --dart-define=AMR_HOST=$wslIp
 
 | | 方式 A：AMR_HOST + 防火墙 | 方式 B：adb reverse |
 |---|---|---|
-| 配置成本 | 高（防火墙需管理员 + 改启动命令 + 重启 App） | 低（4 条命令，App 不用动） |
+| 配置成本 | 高（防火墙需管理员 + 改启动命令 + 重启 App） | 低（`amr_start_windows.ps1` 一条命令 / 手敲 4 条） |
 | 模拟器重启后 | 不用重做（IP 不变时） | **必须重做** |
 | WebRTC 视频（UDP 8189） | 直连，低延迟 | 不支持 UDP，WebRTC 失败；需手动切 RTSP，+100~200ms |
 | 适合场景 | 长期开发 / 对视频延迟敏感 | 临时演示、快速恢复现场 |
@@ -148,16 +159,17 @@ C:\Users\dxw\fvm\flutter\bin\flutter.bat devices
 
 ```bash
 # 在 WSL 里执行
-# 1) 监听状态（-l 只看 listener）
-ss -lntp | grep -E ':9090|:1884'
+# 1) 监听状态（-l 只看 listener）：业务网关 HTTP/WS
+ss -lntp | grep -E ':8080|:8081'
 
 # 2) 已建立连接（注意这里不带 -l，-l 会过滤掉 ESTAB）
-ss -tnp | grep -E ':9090|:1884'
+ss -tnp | grep -E ':8080|:8081'
 ```
 
 判断标准：
-- 监听：`0.0.0.0:9090`、`0.0.0.0:1884`（前者是 rosbridge，后者是 mosquitto）；
-- 连接：至少各有一条 `ESTAB`。没有 `ESTAB` 说明 App 还没连上，回到 §1 检查 `adb reverse`。
+- 监听：`0.0.0.0:8080`（网关 HTTP）、`0.0.0.0:8081`（网关 WS）；
+- 连接：至少各有几条 `ESTAB`（App 的 HTTP 短连接 + WS 长连接）。没有 `ESTAB` 说明 App 还没连上，回到 §1 检查 `adb reverse`。
+- 网关没起时先看 `curl http://localhost:8080/healthz`，再查 `amr_start.sh` 是否带了 `--no-gateway`。
 
 ### 3.4 地图链路是否真的通
 
@@ -169,23 +181,27 @@ source ~/amr/amr_sim_ws/install/setup.bash
 # map_server 是否已激活
 ros2 lifecycle get /map_server          # 期望 active [3]
 
-# /map 是否在发布、有没有 App 的订阅（rosbridge 会代 App 订阅）
+# /map 是否在发布、是否有订阅方（网关通过 rosbridge 订阅并落盘）
 ros2 topic info -v /map | grep -E 'Publisher count|Subscription count|Node name'
+
+# 网关是否已把地图落盘、HTTP 能否取到元数据
+curl -s -H 'Authorization: Bearer amr-dev-token' http://127.0.0.1:8080/api/v1/map/meta
+ls -l ~/.amr_gateway/maps/map.pgm ~/.amr_gateway/maps/map.json
 ```
 
-期望：`Subscription count` 至少为 3（`amcl`、`global_costmap`、`rosbridge_websocket`）。出现 `rosbridge_websocket` 就说明 App 已经订阅上了。
+期望：`Subscription count` 至少为 3（`amcl`、`global_costmap`、`rosbridge_websocket`）；出现 `rosbridge_websocket` 说明网关已经订阅上 `/map`。`/api/v1/map/meta` 返回带 `version` 的 JSON（还没落盘时是 404 `MAP_NOT_READY`）。
 
-> 补充：`/map` 是 `TRANSIENT_LOCAL` 的 latched 话题，`map_server` 只在激活时发一次。rosbridge 在客户端未指定 QoS 时会自动把订阅升级为 `transient_local`，所以 App 连上后能立刻拿到这张地图，**不需要重发地图**。
+> 补充：`/map` 是 `TRANSIENT_LOCAL` 的 latched 话题，`map_server` 只在激活时发一次。网关的 rosbridge 客户端把订阅升级为 `transient_local`，拿到后写成 PGM + JSON（`version` = sha1）。App 不再直连 `/map`，而是通过网关 HTTP 下载 `map.pgm` 并本地缓存，所以**不需要重发地图**，网关重启也能从磁盘恢复版本。
 
 ### 3.5 App 界面
 
-- 顶栏 `WS`、`MQTT` 两个点**均为绿色**；
+- 顶栏 `GW`、`WS`、`MQTT` 三个点**均为绿色**（`MQTT` 反映网关内部链路，断开时业务接口返回 503）；
 - 地图页出现栅格地图 + 中心机器人图标，不再显示「等待地图数据…」。
 
 ### 3.6 连不上时看 App 日志
 
 ```powershell
-& 'C:\Users\dxw\fvm\android-sdk\platform-tools\adb.exe' logcat -d | Select-String -Pattern 'SocketException|RosbridgeClient'
+& 'C:\Users\dxw\fvm\android-sdk\platform-tools\adb.exe' logcat -d | Select-String -Pattern 'SocketException|GatewayClient|GatewayWs'
 ```
 
 ---
@@ -195,9 +211,10 @@ ros2 topic info -v /map | grep -E 'Publisher count|Subscription count|Node name'
 | 现象 | 最可能原因 | 处理 |
 |---|---|---|
 | logcat：`Connection refused, address = 127.0.0.1` | App 用默认 `AMR_HOST=127.0.0.1`，且没有 `adb reverse` | 按 §1 加 4 条 reverse |
-| 地图区「等待地图数据…」+ `WS` 灯灰 | rosbridge 没连上（与上一行同源） | 同上；再看 §3.3 是否有 `ESTAB` |
-| `WS` 灯绿、`MQTT` 灯灰 | `1884` 没映射，或 WSL 里 mosquitto 没起来 | 补 `adb reverse tcp:1884`；`ss -lntp` 看 1884；看 `~/arm_logs/<最新>/mosquitto.log` |
-| `WS`、`MQTT` 都绿，地图仍空白 | `/map` 没发布 / `map_server` 未 active | `ros2 lifecycle get /map_server`；`ros2 lifecycle set /map_server activate`；再按 §3.4 查 |
+| 地图区「等待地图数据…」+ `GW`/`WS` 灯灰 | 网关 8080/8081 没通（与上一行同源） | 同上；`curl http://localhost:8080/healthz`；再看 §3.3 是否有 `ESTAB` |
+| `GW` 灯绿、`WS` 灯灰 | `8081` 没映射，或网关 WS 未监听 | 补 `adb reverse tcp:8081`；`ss -lntp \| grep 8081` |
+| `GW`、`WS` 绿、`MQTT` 灯灰 | 网关与 mosquitto（1884，WSL 内部）断开 | 不用映射 1884；查 `~/arm_logs/<最新>/mosquitto.log` 与 `~/.amr_gateway/gateway.log`，业务接口此时返回 503 |
+| `GW`、`WS`、`MQTT` 都绿，地图仍空白 | `/map` 没发布 / `map_server` 未 active / 网关未落盘 | `ros2 lifecycle get /map_server`；`ros2 lifecycle set /map_server activate`；再按 §3.4 查 `/api/v1/map/meta` 与 `~/.amr_gateway/maps/` |
 | 地图有了，但机器人不在原点 / 无 TF | AMCL 没收到初始位姿 | 重跑 `./amr_start.sh`，或按 RUNBOOK §2.4 补发 `/initialpose`（脚本已带协方差+重试） |
 | 视频页无画面 | `8889`（WHEP）/ `18554`（RTSP）没映射；或 UDP 8189 被挡 | 补 reverse；方式 B 下需在 App 相机页手动切到 RTSP |
 | 刚才还好，模拟器重启后又不行 | `adb reverse` 规则随模拟器重启丢失 | 重跑 §1 |
@@ -226,4 +243,23 @@ ros2 topic info -v /map | grep -E 'Publisher count|Subscription count|Node name'
 
 - 本手册只动 Windows 侧（模拟器端口映射 / 防火墙 / App 启动参数），**不要为了修连接问题去 `pkill` WSL 里的仿真进程**。
 - 仿真端是否需要启动、怎么启动，看 [RUNBOOK.md](RUNBOOK.md) 或直接用 `~/amr/amr_start.sh`。
-- 如果按 §1/§3 全部做完仍连不上，先确认 WSL 侧 9090/1884 有监听（`ss -lntp`），再确认 Windows 有到 WSL 的网络路径（`Test-NetConnection <WSL_IP> -Port 9090`）。
+- 如果按 §1/§3 全部做完仍连不上，先确认 WSL 侧 8080/8081 有监听（`ss -lntp`），再确认 Windows 有到 WSL 的网络路径（`Test-NetConnection <WSL_IP> -Port 8080`）。
+
+### 6.1 相关脚本参数（与 `amr_start_windows.ps1` / `amr_web_start.ps1` 对齐）
+
+| 参数 | 默认 | 说明 |
+|---|---|---|
+| `-GatewayHttpPort` | `8080` | 业务网关 HTTP；同时用于端口检查与 `adb reverse` |
+| `-GatewayWsPort` | `8081` | 业务网关 WS；同时用于端口检查与 `adb reverse` |
+| `-NetMode` | `mirrored` | 默认 mirrored（`AMR_HOST=localhost`/`127.0.0.1`）；`-NetMode nat` 切回 NAT（改用 WSL IP） |
+| `-WslIp` | 自动探测 | NAT 模式下显式指定 WSL IP |
+| `-WhepPort` / `-RtspPort` | `8889` / `18554` | 视频端口，参与 reverse 与端口检查 |
+| `-Port`（仅 `amr_web_start.ps1`） | `8090` | Web 静态托管端口；dev server 用 8091，**避开网关 8080/8081** |
+
+```powershell
+# 默认：mirrored + 网关 8080/8081
+.\amr_start_windows.ps1
+
+# 自定义端口 / 切回 NAT
+.\amr_start_windows.ps1 -GatewayHttpPort 8080 -GatewayWsPort 8081 -NetMode nat -WslIp 192.168.0.103
+```

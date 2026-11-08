@@ -22,6 +22,7 @@
 #
 # 日志目录：~/arm_logs/<YYYYmmdd-HHMMSS>/（放家目录，避免日志混进项目 git 仓库）
 #   mosquitto.log      RUNBOOK §2.2（MQTT Broker 1884/9002）
+#   gateway.stdout.log RUNBOOK §2.3（业务网关 HTTP 8080 / WS 8081）
 #   full_bringup.log   RUNBOOK §2.3（Gazebo+Nav2+巡检+rosbridge+MQTT桥+MediaMTX+GStreamer）
 #   initialpose.log    RUNBOOK §2.4（/initialpose 激活 Nav2）
 #   verify.log         RUNBOOK §2.5（验证命令原始输出）
@@ -92,7 +93,7 @@ usage() {
   --build           强制 colcon build
   --force           SIGTERM 等待缩短到 2s，并跳过确认
   --keep            启动失败时保留现场（默认回滚本次拉起的进程）
-  --no-gateway      不启动业务网关（仅调试用；App 的 HTTP/WS 业务通道不可用）
+  --no-gateway      只跳过业务网关（调试用）；App 的 HTTP/WS 业务通道不可用，其余照常启动
   --stop            只清理，不启动
   -h, --help        显示本帮助
 
@@ -142,7 +143,7 @@ preflight() {
     c_warn "install/setup.bash 不存在，将自动 colcon build（RUNBOOK §2.1）"
   fi
 
-  for c in mosquitto ros2 gz colcon ffprobe ss pgrep; do
+  for c in mosquitto mosquitto_passwd ros2 gz colcon ffprobe ss pgrep curl; do
     if command -v "$c" >/dev/null 2>&1; then
       c_ok "工具 $c -> $(command -v "$c")"
     elif [ "$c" = "ros2" ] || [ "$c" = "gz" ]; then
@@ -152,7 +153,7 @@ preflight() {
     fi
   done
 
-  for port in 1884 9002 9090 18554 8889; do
+  for port in 1884 9002 9090 18554 8889 8080 8081; do
     if ss -lnt 2>/dev/null | grep -q ":$port "; then c_warn "端口 $port 已被占用（可能上次残留，清理阶段处理）"; fi
   done
 
@@ -418,9 +419,9 @@ start_mosquitto() {
 
 start_gateway() {
   # 业务网关：HTTP 8080 / WS 8081，唯一 MQTT 发布者 + 唯一 rosbridge 客户端
-  section "2d. 启动业务网关（HTTP 8080 / WS 8081）"
+  section "2g. 启动业务网关（HTTP 8080 / WS 8081）"
   if [ "$ENABLE_GATEWAY" -eq 0 ]; then
-    c_warn "--no-gateway：已跳过；App 只能使用旧版直连方式"
+    c_warn "--no-gateway：跳过网关拉起；App 的 HTTP/WS 业务通道不可用（当前 App 没有旧版直连客户端）"
     return 0
   fi
   local runner="$WS/src/amr_gateway/scripts/run_gateway.sh"
@@ -447,7 +448,7 @@ start_gateway() {
 
 start_bringup() {
   # RUNBOOK §2.3：终端 2 一键启动全链路（launch 内 TimerAction 排 0/5/6/8/10/12s）
-  section "2e. 启动全链路（RUNBOOK §2.3）"
+  section "2d. 启动全链路（RUNBOOK §2.3）"
   cd "$WS" || return 1
   local trace="$LOG_DIR/amr_trace.jsonl"
   local cmd=(ros2 launch amr_bringup full_bringup.launch.py
@@ -565,10 +566,15 @@ verify_all() {
   fi
 
   for p in 1884 9090 8889 8080 8081; do
+    if [ "$ENABLE_GATEWAY" -eq 0 ] && { [ "$p" = "8080" ] || [ "$p" = "8081" ]; }; then
+      continue
+    fi
     if has_port "$p"; then c_ok "端口 $p 监听中"; else c_warn "端口 $p 未监听"; fi
   done
 
-  if has_port 8080 && curl -fsS http://127.0.0.1:8080/healthz >/dev/null 2>&1; then
+  if [ "$ENABLE_GATEWAY" -eq 0 ]; then
+    c_warn "已按 --no-gateway 跳过网关检查（App 的 HTTP/WS 业务通道不可用）"
+  elif has_port 8080 && curl -fsS http://127.0.0.1:8080/healthz >/dev/null 2>&1; then
     local gw
     gw="$(curl -fsS http://127.0.0.1:8080/healthz 2>/dev/null)"
     c_ok "网关健康：$gw"
@@ -685,6 +691,11 @@ if verify_all; then
   fi
   section "启动完成"
   c_ok "仿真端已就绪。日志：$LOG_DIR"
+  if [ "$ENABLE_GATEWAY" -eq 1 ]; then
+    echo "  网关：http://127.0.0.1:8080/healthz（App 业务 HTTP 8080 / WS 8081）"
+  else
+    echo "  网关：已按 --no-gateway 跳过（App 业务通道不可用）"
+  fi
   echo "  下次单独验证：source $ROS_SETUP && source $WS_SETUP && ros2 node list"
   echo "  停止并清理：$SCRIPT_DIR/amr_start.sh --stop"
   echo "  下一步（Windows 侧，与本脚本同目录）："

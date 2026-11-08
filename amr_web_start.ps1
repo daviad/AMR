@@ -6,7 +6,7 @@
 #   powershell -ExecutionPolicy Bypass -File "\\wsl.localhost\Ubuntu\home\dxw\amr\amr_web_start.ps1"
 #   .\amr_web_start.ps1 -Profile            # 构建 profile 版（默认 release）
 #   .\amr_web_start.ps1 -NoBuild            # 直接用已有 build/web，只起服务
-#   .\amr_web_start.ps1 -Port 8082 -Open    # 换端口并打开浏览器
+#   .\amr_web_start.ps1 -Port 8091 -Open    # 换端口并打开浏览器（8080/8081 被网关占用）
 #   .\amr_web_start.ps1 -NetMode nat        # NAT：AMR_HOST 用 WSL IP，浏览器也用该 IP
 #   .\amr_web_start.ps1 -DryRun             # 只打印，不构建/不起服务
 #   .\amr_web_start.ps1 -Help
@@ -19,9 +19,9 @@
 param(
     [ValidateSet('mirrored', 'nat')] [string]$NetMode = 'mirrored',
     [string]$WslIp = '',
-    [int]$Port = 8081,
-    [int]$RosbridgePort = 9090,
-    [int]$MqttWsPort = 9002,
+    [int]$Port = 8090,
+    [int]$GatewayHttpPort = 8080,
+    [int]$GatewayWsPort = 8081,
     [int]$HlsPort = 18888,
     [switch]$Profile,
     [switch]$NoBuild,
@@ -48,13 +48,13 @@ function Show-Help {
   （无参数）            flutter build web --release → 起静态服务（WSL python3 优先）
   -Profile              构建 profile 版
   -NoBuild              跳过构建，直接服务已有 build/web
-  -Port <n>             静态服务端口（默认 8081）
+  -Port <n>             静态服务端口（默认 8090；不要用网关的 8080/8081）
   -Open                 构建/起服务后自动打开浏览器
   -NetMode mirrored     默认；AMR_HOST=localhost
   -NetMode nat          AMR_HOST 用 WSL IP（-WslIp 覆盖自动探测），浏览器也用该 IP
   -Server auto|wsl|windows  静态服务运行位置（默认 auto：先 WSL python3，再 Windows python）
-  -RosbridgePort <n>    rosbridge 端口（默认 9090，仅做连通性提示）
-  -MqttWsPort <n>       MQTT WebSocket 端口（默认 9002，仅做连通性提示）
+  -GatewayHttpPort <n>  业务网关 HTTP 端口（默认 8080，仅做连通性提示）
+  -GatewayWsPort <n>    业务网关 WS 端口（默认 8081，仅做连通性提示）
   -HlsPort <n>          HLS 视频端口（默认 18888，仅做连通性提示）
   -Project <path>       Windows 副本目录（默认 C:\Users\dxw\Documents\dev\amr_app）
   -Flutter <path>       flutter.bat 路径
@@ -216,10 +216,10 @@ if (Test-PortBusy $Port) {
 Section '3. 后端端口连通性（仅提示，不阻塞）'
 $probeHost = $hostForApp
 if ($probeHost -eq 'localhost') { $probeHost = '127.0.0.1' }
-if (Test-Port $probeHost $RosbridgePort) { Ok ("rosbridge {0}:{1} 可连通" -f $probeHost, $RosbridgePort) }
-else { Warn ("rosbridge {0}:{1} 不通 —— 页面能打开但地图/指令不会有数据；请先在 WSL 执行 ./amr_start.sh" -f $probeHost, $RosbridgePort) }
-if (Test-Port $probeHost $MqttWsPort) { Ok ("MQTT-WS {0}:{1} 可连通" -f $probeHost, $MqttWsPort) }
-else { Warn ("MQTT-WS {0}:{1} 不通 —— Web 端导航指令不可用" -f $probeHost, $MqttWsPort) }
+if (Test-Port $probeHost $GatewayHttpPort) { Ok ("网关 HTTP {0}:{1} 可连通（任务/地图）" -f $probeHost, $GatewayHttpPort) }
+else { Warn ("网关 HTTP {0}:{1} 不通 —— 页面能打开但地图停在等待、指令不可用；请先在 WSL 执行 ./amr_start.sh" -f $probeHost, $GatewayHttpPort) }
+if (Test-Port $probeHost $GatewayWsPort) { Ok ("网关 WS {0}:{1} 可连通（位姿/路径/扫描推送）" -f $probeHost, $GatewayWsPort) }
+else { Warn ("网关 WS {0}:{1} 不通 —— Web 端看不到实时位姿/路径/扫描" -f $probeHost, $GatewayWsPort) }
 if (Test-Port $probeHost $HlsPort) { Ok ("HLS {0}:{1} 可连通" -f $probeHost, $HlsPort) }
 else { Warn ("HLS {0}:{1} 不通 —— Web 端视频会黑屏（需 WSL 侧 mediamtx 已起）" -f $probeHost, $HlsPort) }
 

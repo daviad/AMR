@@ -2,7 +2,7 @@
 
 > 版本：v2.0 | 日期：2026-11-03
 > 适用于：Windows 11 + WSL2 (Ubuntu 24.04) + ROS2 Jazzy + Gazebo Sim 8 + Flutter 3.47
-> 最近变更：视频从「rosbridge JPEG 逐帧 + ffmpeg 推流」升级为 **GStreamer 双码流 → MediaMTX → WebRTC(WHEP)**；导航控制从「rosbridge `/goal_pose` + MQTT 双发」改为 **MQTT 单通道 + cmd_id 幂等状态机 + Nav2 Action 透传**。
+> 最近变更：视频从「rosbridge JPEG 逐帧 + ffmpeg 推流」升级为 **GStreamer 双码流 → MediaMTX → WebRTC(WHEP)**；导航控制从「rosbridge `/goal_pose` + MQTT 双发」改为 **MQTT 单通道 + cmd_id 幂等状态机 + Nav2 Action 透传**。业务网关收口：App 走 HTTP 8080 + WS 8081；rosbridge/MQTT 降级为网关内部/调试。
 
 **完整验收步骤**（含故障注入、延迟实测、Windows 模拟器运行）见 [CHECK.md](../CHECK.md)。
 
@@ -16,9 +16,11 @@
 | Flutter 项目（WSL 源码，主）   | `/home/dxw/amr/amr_app`              |
 | Flutter 项目（Windows 构建副本） | `C:\Users\dxw\Documents\dev\amr_app` |
 | WSL IP（mirrored 模式）      | `192.168.0.103`（示例值，以 `hostname -I` 为准）    |
-| rosbridge（WebSocket）     | `9090`                               |
-| MQTT（TCP）               | `1884`                               |
-| MQTT（WebSocket，Web 大屏用） | `9002`                               |
+| 业务 HTTP（网关，App 唯一业务出口） | `8080`（`http://<host>:8080`，token 默认 `amr-dev-token`） |
+| 业务推送 WS（网关，App 唯一业务出口） | `8081`（`ws://<host>:8081/ws?token=...`） |
+| rosbridge（WebSocket）     | `9090`（网关与仿真端内部使用，App 不直连） |
+| MQTT（TCP）               | `1884`（网关与仿真端内部使用，App 不直连） |
+| MQTT（WebSocket，调试用）    | `9002`（网关与仿真端内部使用，App 不直连） |
 | RTSP 视频流（App fallback）  | `18554`（`rtsp://<host>:18554/camera`、`/camera_low`） |
 | WebRTC WHEP（App 主视频）    | `8889`（`http://<host>:8889/camera/whep`） |
 | WebRTC ICE（UDP/TCP）      | `8189`                               |
@@ -26,7 +28,7 @@
 | JDK 21（构建用）              | `C:\Users\dxw\.jdks\jbr-21.0.11`     |
 | Flutter SDK（Windows）     | `C:\Users\dxw\fvm\flutter`           |
 | adb（全路径，未加入 PATH）        | `C:\Users\dxw\fvm\android-sdk\platform-tools\adb.exe` |
-| Web 大屏（浏览器访问）            | `http://localhost:8081/#/dashboard`  |
+| Web 大屏（浏览器访问）            | `http://localhost:8090/#/dashboard`  |
 
 ***
 
@@ -95,12 +97,13 @@ PUB_HOSTED_URL=https://pub.dev /home/dxw/.local/flutter/bin/flutter test
 ### 2.2 启动 MQTT Broker
 
 ```bash
-# 终端 1：启动 mosquitto（TCP 1884 + WebSocket 9002，允许匿名）
+# 终端 1：启动 mosquitto（TCP 1884 + WebSocket 9002）
 # 注意：系统自带 mosquitto 已占用 1883，本项目用 1884/9002
+# 已启用 password_file + acl_file，匿名连接被拒
 mosquitto -c /home/dxw/amr/amr_sim_ws/src/amr_comm/config/mosquitto.conf
 ```
 
-验证：`ss -lntp | grep -E '1884|9002'` 有监听；`mosquitto_sub -t amr/status/battery -h 127.0.0.1 -p 1884` 应有电量消息。
+验证：`ss -lntp | grep -E '1884|9002'` 有监听；`mosquitto_sub -h 127.0.0.1 -p 1884 -u robot -P robot-dev-pass -t amr/status/battery -C 1` 应有电量消息。账号（gateway/robot）由 `amr_start.sh` 调 `setup_mqtt_auth.sh` 自动生成，密码文件不进 git。
 
 ### 2.3 一键启动全链路
 
@@ -126,11 +129,13 @@ env -u LD_LIBRARY_PATH bash -lc '
 | 时间 | 组件 | 说明 |
 |---|---|---|
 | 0s | Gazebo Sim + ros_gz_bridge + **MediaMTX** | RTSP 18554 / WHEP 8889 / ICE 8189 / HLS 18888 |
-| 5s | rosbridge + mqtt_client + **image_transport republish** | republish 仅服务拍照（`/camera/image_raw/compressed`） |
+| 5s | rosbridge + mqtt_client + **image_transport republish** | republish 仅服务网关快照（`/camera/image_raw/compressed`） |
 | 6s | **mission_bridge** | MQTT 指令 → Nav2 `NavigateToPose`；ACK/Feedback/Result/取消/cmd_id 幂等 |
 | 8s | **gst_video_source** | Gazebo `/camera/image_raw`（或 videotestsrc）→ tee → 双路 x264enc → RTSP → MediaMTX |
 | 10s | Nav2 | AMCL + planner + controller（需 §2.4 初始位姿激活） |
 | 12s | inspection_node | 巡检业务 + 电池仿真 |
+
+> **业务网关**：`full_bringup` 不含网关，由 `amr_start.sh` 默认拉起（HTTP 8080 / WS 8081，唯一 MQTT 发布者 + 唯一 rosbridge 客户端）；`--no-gateway` 只跳过网关，其余照常。
 
 > **关键参数**：
 > - `video_source:=test`：跳过 Gazebo 摄像头，用 GStreamer videotestsrc 验证视频链路（地图/仿真不可用但 MediaMTX + WHEP 正常）
@@ -322,11 +327,15 @@ tasklist | findstr /i emulator
 flutter run -d emulator-5554 --dart-define=AMR_HOST=192.168.0.103
 ```
 
+> `AMR_HOST` 同时作为网关 host（HTTP 8080 / WS 8081），无需新增 gateway host/port 参数。
+
 ✅ WebRTC UDP 8189 可直连，视频走 WHEP 低延迟。  
-✅ Windows 防火墙放行入站 TCP 9090/1884/8889/18554/18888 + UDP 8189：
+✅ Windows 防火墙放行入站 TCP 8080/8081/8889/18554/18888 + UDP 8189：
 
 ```powershell
-New-NetFirewallRule -DisplayName "AMR-TCP" -Direction Inbound -Protocol TCP -LocalPort 9090,1884,8889,18554,18888 -Action Allow -Profile Private
+# 若已有旧的 AMR-TCP 规则，先删重复规则再重建
+Remove-NetFirewallRule -DisplayName "AMR-TCP" -ErrorAction SilentlyContinue
+New-NetFirewallRule -DisplayName "AMR-TCP" -Direction Inbound -Protocol TCP -LocalPort 8080,8081,8889,18554,18888 -Action Allow -Profile Private
 New-NetFirewallRule -DisplayName "AMR-WebRTC-UDP" -Direction Inbound -Protocol UDP -LocalPort 8189 -Action Allow -Profile Private
 ```
 
@@ -336,12 +345,19 @@ New-NetFirewallRule -DisplayName "AMR-WebRTC-UDP" -Direction Inbound -Protocol U
 
 ```powershell
 $adb = 'C:\Users\dxw\fvm\android-sdk\platform-tools\adb.exe'
-& $adb reverse tcp:9090 tcp:9090    # rosbridge
-& $adb reverse tcp:1884 tcp:1884    # MQTT
+& $adb reverse tcp:8080 tcp:8080    # 业务网关 HTTP（App 必用）
+& $adb reverse tcp:8081 tcp:8081    # 业务网关 WS 推送（App 必用）
 & $adb reverse tcp:8889 tcp:8889    # WebRTC WHEP 信令
 & $adb reverse tcp:18554 tcp:18554  # RTSP fallback
 & $adb reverse --list               # 确认规则存在
+# 9090/1884 不再需要：仅当你要在手机侧调试 rosbridge/MQTT 时才手动加：
+# & $adb reverse tcp:9090 tcp:9090
+# & $adb reverse tcp:1884 tcp:1884
 ```
+
+> `amr_start_windows.ps1` 默认只 reverse 上面 **4 条**（8080/8081/8889/18554），与本节一致。
+
+> App 默认 `127.0.0.1`（不带 `--dart-define=AMR_HOST` 时），缺 8080/8081 这两条就连不上网关。
 
 > ⚠️ `adb reverse` **不支持 UDP**，所以 WebRTC 的 ICE 协商拿不到 UDP 候选对，会导致连接失败并反复重连（App 不会自动切源），需在相机页视频源菜单手动切到 RTSP（TCP interleaved）。视频可用但比 mirrored 路径高 100~200ms。
 
@@ -397,16 +413,17 @@ flutter build web --dart-define=AMR_HOST=localhost
 
 ```bash
 # 2) WSL 侧起静态服务（Windows 浏览器可直连；需先执行上一段的 flutter build web 生成 build/web）
+# 静态服务端口避开网关的 8080/8081
 cd "/mnt/c/Users/dxw/Documents/dev/amr_app/build/web"
-python3 -m http.server 8081 --bind 0.0.0.0
+python3 -m http.server 8090 --bind 0.0.0.0
 ```
 
-浏览器访问 `http://localhost:8081/#/dashboard`。大屏包含：地图 + 机器人位姿（左）、HLS 视频 / 状态 / 巡检控制（右）。
+浏览器访问 `http://localhost:8090/#/dashboard`。大屏包含：地图 + 机器人位姿（左）、HLS 视频 / 状态 / 巡检控制（右）。
 
 调试模式也可用，但**每次改代码后需换端口或清缓存**，否则浏览器会加载旧 `main.dart.js`：
 
 ```powershell
-flutter run -d web-server --web-port=8080 --dart-define=AMR_HOST=localhost
+flutter run -d web-server --web-port=8091 --dart-define=AMR_HOST=localhost
 ```
 
 > Web 端视频用 hls.js 播放（已内置于 web/index.html + web/hls.min.js，无需外网）。
@@ -416,13 +433,13 @@ flutter run -d web-server --web-port=8080 --dart-define=AMR_HOST=localhost
 
 App 启动后依次确认：
 
-- 顶栏 WS / MQTT 指示灯均为绿色
-- 地图页显示栅格地图（`/map`）+ 机器人位姿跟随
-- 点选地图 → 只发 MQTT `amr/cmd/goal`（**不再**有 rosbridge `/goal_pose` 双发）
+- 顶栏 GW(HTTP) / WS / MQTT 指示灯均为绿色：GW=网关 `/healthz` 可达、WS=推送已连、MQTT=网关与 broker 链路正常
+- 地图页经 HTTP 拉到 PGM（`GET /api/v1/map/meta` + `GET /api/v1/map/pgm?version=`）并显示（Hive 缓存命中时秒开），**不是**「等待地图数据…」；机器人位姿跟随
+- 点选地图目标点 → App 走 HTTP `POST /api/v1/tasks`，**不再发 MQTT**（回执由网关经 WS `task` 事件推送）
 - 指令卡片（地图页左上角）依次显示 `待发送 → 已发送 → 已确认 → 执行中 → 已完成`，并展示 Nav2 `nav_state`（PLANNING / CONTROLLING / RECOVERING）、恢复次数、剩余距离、ETA
 - 相机页：**默认 WebRTC 预览**，顶部健康条显示 `HEALTHY` + fps + 分辨率 + RTT + jitter + decode P50/P95
-- 相机页菜单：画质策略（自动/主码流/低码流）、视频源（WebRTC/RTSP/rosbridge JPEG）
-- 拍照：与视频链路解耦，取 `/camera/image_raw/compressed` 单帧；**弱网/视频 LOST 时仍可拍照**（或超时提示）
+- 相机页菜单：画质策略（自动/主码流/低码流）、视频源（仅 WebRTC/RTSP，视频仍直连 MediaMTX）
+- 拍照：走网关快照 `GET /api/v1/snapshot`，与视频链路解耦；**弱网/视频 LOST 时仍可拍照**（或超时提示）
 - App 日志搜索 `[CMD_TRACE]`：`cmd_id`/`trace_id` 应与 WSL `tail -f /tmp/amr_trace.jsonl` 一致
 
 Web 大屏打开后，检查：
@@ -431,7 +448,7 @@ Web 大屏打开后，检查：
 - 右上「视频」卡播放 3D 场景画面
 - 右中「状态」卡显示电量 / 模式 / 巡检
 - 右下「巡检控制」卡有「开始 / 停止」按钮
-- 顶栏 MQTT / ROS 指示灯为绿色
+- 顶栏 GW / WS / MQTT 指示灯为绿色
 
 ### 3.7 一键脚本（App / Web）
 
@@ -454,7 +471,7 @@ powershell -ExecutionPolicy Bypass -File "\\wsl.localhost\Ubuntu\home\dxw\amr\am
 
 默认（`-Mode install`）等价于 §3.1–§3.4 全流程：
 
-同步 Windows 副本 → 前置检查（flutter / adb / SDK / JDK / AVD）→ `gradlew.bat --stop` → `flutter pub get`（含 `.flutter-plugins-dependencies` 的 `/home/` 自检）→ 复用在线设备或启动 AVD 并轮询 `sys.boot_completed=1` → 检查 9090 / 1884 / 8889 / 18554 → `adb reverse` 四条 → `flutter build apk --debug` → `adb install -r` → `am start`。结束时打印设备、端口、WS 地址摘要。任一前置缺失只报"缺什么、你该怎么做"，不会甩红字堆栈。
+同步 Windows 副本 → 前置检查（flutter / adb / SDK / JDK / AVD）→ `gradlew.bat --stop` → `flutter pub get`（含 `.flutter-plugins-dependencies` 的 `/home/` 自检）→ 复用在线设备或启动 AVD 并轮询 `sys.boot_completed=1` → 检查 8080 / 8081 / 8889 / 18554 → `adb reverse` 四条（8080 / 8081 / 8889 / 18554）→ `flutter build apk --debug` → `adb install -r` → `am start`。结束时打印设备、端口、GW/WS 地址摘要。任一前置缺失只报"缺什么、你该怎么做"，不会甩红字堆栈。
 
 **日常会用**：
 
@@ -464,7 +481,7 @@ powershell -ExecutionPolicy Bypass -File "\\wsl.localhost\Ubuntu\home\dxw\amr\am
 | `-Mode attach` | 改用 `flutter run -d <设备>`，带热重载，占住终端（Ctrl+C 退出） |
 | `-Mode build` | 只构建 APK，不碰设备 |
 | `-NoSync` | 跳过同步（副本已最新，省 20~30s） |
-| `-NetMode nat` | WSL 为 NAT 时使用；`AMR_HOST` 取 WSL IP，可用 `-WslIp` 显式指定 |
+| `-NetMode` | 默认 `mirrored`；`-NetMode nat` 切回 NAT（`AMR_HOST` 取 WSL IP，可用 `-WslIp` 显式指定） |
 | `-Clean` | 先 `flutter clean`（「改了代码没生效」时用，耗时增加） |
 
 **排障会用**：
@@ -475,7 +492,7 @@ powershell -ExecutionPolicy Bypass -File "\\wsl.localhost\Ubuntu\home\dxw\amr\am
 | `-NoAvd` | 设备不在线时也不启动模拟器，直接以退出码 5 失败 |
 | `-Avd <name>` | AVD 名，默认 `Small_Phone` |
 | `-Project` / `-Flutter` / `-SdkRoot` / `-Jdk` / `-SyncScript` | 覆盖副本目录 / flutter.bat / Android SDK / JDK / 同步脚本路径 |
-| `-RosbridgePort` / `-MqttPort` / `-WhepPort` / `-RtspPort` | 覆盖 9090 / 1884 / 8889 / 18554（同时用于端口检查与 `adb reverse`） |
+| `-GatewayHttpPort` / `-GatewayWsPort` / `-WhepPort` / `-RtspPort` | 覆盖 8080 / 8081 / 8889 / 18554（同时用于端口检查与 `adb reverse`） |
 
 `-Jdk` 指向的路径不存在时只警告并沿用当前 `JAVA_HOME`（不硬失败）；脚本只在自身进程内设置 `JAVA_HOME`，不污染你的终端配置。
 
@@ -489,26 +506,26 @@ powershell -ExecutionPolicy Bypass -File "\\wsl.localhost\Ubuntu\home\dxw\amr\am
 
 | 参数 | 用途 |
 |---|---|
-| （无参数） | release 构建 + 在 8081 起静态服务 |
+| （无参数） | release 构建 + 在 8090 起静态服务 |
 | `-NoBuild` | 跳过构建，直接服务已有 `build\web`（改完代码只想重启服务时用） |
-| `-Port <n>` | 静态服务端口，默认 **8081** |
+| `-Port <n>` | 静态服务端口，默认 **8090** |
 | `-Open` | 起服务后自动打开浏览器 |
 | `-Profile` | 构建 profile 版（默认 release） |
 | `-Server auto\|wsl\|windows` | 指定静态服务运行位置（默认 auto） |
-| `-RosbridgePort` / `-MqttWsPort` / `-HlsPort` | 覆盖 9090 / 9002 / 18888，仅用于启动前的连通性提示 |
-| `-NetMode nat` / `-WslIp` | WSL 为 NAT 时构建 `AMR_HOST=WSL IP`，浏览器也用该 IP 访问 |
+| `-GatewayHttpPort` / `-GatewayWsPort` / `-HlsPort` | 覆盖 8080 / 8081 / 18888，仅用于启动前的连通性提示 |
+| `-NetMode` / `-WslIp` | 默认 `mirrored`（`AMR_HOST=localhost`）；`-NetMode nat` 切回 NAT，构建 `AMR_HOST=WSL IP`，浏览器也用该 IP 访问 |
 | `-NoBuild` + `-DryRun` | 排障：看它选中哪种 python、会执行哪条命令 |
 
-> **端口口径**：脚本默认静态服务 **8081**，与 §3.5 的 `python3 -m http.server 8081` 一致，浏览器地址 `http://localhost:8081/#/dashboard`。§3.5 末尾的 `flutter run -d web-server --web-port=8080` 是另一条路径（Flutter 自带 dev server），不是静态服务。若想让静态服务也走 8080，加 `-Port 8080`，访问地址随之变成 `http://localhost:8080/#/dashboard`。
+> **端口口径**：脚本默认静态服务 **8090**，与 §3.5 的 `python3 -m http.server 8090` 一致，浏览器地址 `http://localhost:8090/#/dashboard`。§3.5 末尾的 `flutter run -d web-server --web-port=8091` 是另一条路径（Flutter 自带 dev server），不是静态服务。**8090/8091 用于避开网关的 8080/8081**，不要把静态服务或 dev server 配到这两个端口。
 
 #### 3.7.3 先决条件与常见失败
 
-- **先跑 WSL 侧**：脚本只做端口连通性提示，**不会**替你启动 Gazebo / rosbridge / MQTT / mediamtx。先按 §2.3 启动 `./amr_start.sh`，否则 App 能装上但 WS / MQTT 灯是灰的。
+- **先跑 WSL 侧**：脚本只做端口连通性提示，**不会**替你启动仿真链路 / 业务网关 / mediamtx。先按 §2.3 启动 `./amr_start.sh`（默认含网关），否则 App 能装上但 GW / WS 灯是灰的。
 - **mirrored**（默认，`-AmrHost auto`）：App 取 WSL `eth0` 的 LAN IP（如 `192.168.0.103`），TCP 与 UDP 都直达；`adb reverse` 仍会设置作为 TCP 兜底（UDP 8189 无法转发）。Web 用 `localhost`。
 - **nat**：App 与 Web 都改用 WSL IP（脚本自动 `hostname -I` 探测，失败回退 `127.0.0.1`），`-WslIp` 可覆盖。nat 下 `adb reverse` 仍会设置，但 WebRTC 的 UDP 8189 走直连，需按 §3.3 方式 A 放行防火墙。
-- **App 首页 WS 未连接**：先确认 WSL 侧 `amr_start.sh` 还在跑，再看 1884/9090 是否可达。
+- **App 首页 GW/WS 未连接**：先确认 WSL 侧 `amr_start.sh` 还在跑，再看 8080/8081 是否可达（`curl http://<host>:8080/healthz`）。
 - **相机页不出画面**：确认 App 的 `AMR_HOST` 是宿主 LAN IP（镜像模式下即 WSL `eth0`，如 `192.168.0.103`），不能用 `127.0.0.1`——`adb reverse` 只能转发 TCP，UDP 8189 过不去。
-- **端口不通不会静默失败**：rosbridge / MQTT / WHEP / RTSP（Web 侧再加 MQTT-WS 9002 / HLS 18888）不通时逐条打印 `[警告]` 并说明后果。
+- **端口不通不会静默失败**：网关 HTTP 8080 / WS 8081 / WHEP / RTSP（Web 侧再加 HLS 18888）不通时逐条打印 `[警告]` 并说明后果。
 - **`.flutter-plugins-dependencies` 含 `/home/`**：脚本会自动重跑一次 `flutter pub get` 并复查；仍残留则说明 WSL 侧生成物又被同步过来了，见 §3.1 的 v3 排除规则。
 - **`local.properties` 是 WSL 路径**（`/home/...` 或 `/mnt/c/...`）：脚本会备份原文件并重写为 Windows 路径。
 - **`ios/Flutter/ephemeral/.swift_pm.lock` 残留导致 `build web` 报 `cannot access the file or directory`**：Web 脚本在构建失败后会移走该 0 字节锁文件并自动重试一次。
@@ -523,7 +540,7 @@ powershell -ExecutionPolicy Bypass -File "\\wsl.localhost\Ubuntu\home\dxw\amr\am
 | 4 | 同步失败或构建失败 |
 | 5 | 设备不在线、端口被占用、安装/启动失败 |
 
-#### 3.7.4 已验证范围（截至 2026-11-06）
+#### 3.7.4 已验证范围（截至 2026-11-06，网关收口前的记录）
 
 - **已实测**：`amr_start_windows.ps1 -Mode install -NoSync` 全流程退出码 0 —— `assembleDebug 27.7s`、APK 230.8 MB、`install Success`、App 进程已启动、4 条 `adb reverse` 规则在列，9090 / 1884 / 8889 / 18554 四项端口检查均为 OK。
 - **已实测**：`amr_web_start.ps1 -NoBuild -Port 8099` 起服务后 `GET /index.html` 返回 200（2477 B）、`HEAD /main.dart.js` 返回 200，9090 / 9002 / 18888 三项提示均为 OK；单独执行 `flutter build web --release` 成功（23.7s）。
@@ -570,11 +587,10 @@ powershell -ExecutionPolicy Bypass -File "\\wsl.localhost\Ubuntu\home\dxw\amr\am
 | 顶部健康条 | `HEALTHY` + fps + 分辨率 + RTT + jitter + decode P50/P95 |
 | 点画质菜单 → 低码流 | 1s 内切到 `camera_low`，分辨率/码率降低 |
 | 点画质菜单 → 自动 | 连续 2 次 DEGRADED/LOST 自动切低码流；连续 4 次 HEALTHY 自动升回 |
-| 视频中断（停掉 mediamtx） | App 健康条变 `LOST`，需在相机页手动切到 RTSP / rosbridge（若启用） |
-| 视频中断时拍照 | 仍可拍照（`/camera/image_raw/compressed` 独立链路） |
-| 视频中断时导航 | 控制通道仍可用（MQTT 与 WebRTC 解耦） |
+| 视频中断（停掉 mediamtx） | App 健康条变 `LOST`，需在相机页手动切到 RTSP |
+| 视频中断时拍照 | 仍可拍照（`GET /api/v1/snapshot` 网关快照，独立链路） |
+| 视频中断时导航 | 控制通道仍可用（网关 HTTP/WS 与 WebRTC 解耦） |
 | 点击截图 | 保存 JPEG 到临时目录（Android：`/data/user/0/com.amr.amr_app/cache/amr_captures`） |
-| 切到 rosbridge JPEG（调试） | 每帧独立拉取，**不做预览默认**，仅调试用 |
 
 **媒体验证命令**（WSL 侧）：
 
@@ -610,24 +626,24 @@ ros2 action send_goal /navigate_to_pose nav2_msgs/action/NavigateToPose "{
   pose: {header: {frame_id: map}, pose: {position: {x: 2.0, y: 1.0, z: 0.0}, orientation: {w: 1.0}}}
 }"
 
-# 通过 MQTT 控制面（含 cmd_id / trace_id / TTL，推荐）
+# 通过 MQTT 控制面（含 cmd_id / trace_id / TTL；仅调试，App 正常业务走网关 HTTP）
 NOW_MS=$(date +%s%3N); CMD_ID="cmd-debug-$(date +%s)"
-mosquitto_pub -h 127.0.0.1 -p 1884 -q 1 -t amr/cmd/goal -m "{
+mosquitto_pub -h 127.0.0.1 -p 1884 -u gateway -P gateway-dev-pass -q 1 -t amr/cmd/goal -m "{
   \"cmd_id\": \"$CMD_ID\", \"trace_id\": \"trace-$CMD_ID\",
   \"timestamp_ms\": $NOW_MS, \"ttl_ms\": 8000,
   \"payload\": {\"frame_id\": \"map\", \"x\": 2.0, \"y\": 1.0, \"theta\": 0.0}
 }"
-# 监听回执
-mosquitto_sub -h 127.0.0.1 -p 1884 -q 1 -t 'amr/cmd/#' -v
+# 监听回执（robot 只读指令、写回报）
+mosquitto_sub -h 127.0.0.1 -p 1884 -u robot -P robot-dev-pass -q 1 -t 'amr/cmd/#' -v
 # 取消当前导航
-mosquitto_pub -h 127.0.0.1 -p 1884 -q 1 -t amr/cmd/cancel -m "{
+mosquitto_pub -h 127.0.0.1 -p 1884 -u gateway -P gateway-dev-pass -q 1 -t amr/cmd/cancel -m "{
   \"cmd_id\": \"cancel-$(date +%s)\", \"target_cmd_id\": \"$CMD_ID\"
 }"
 
-# 其他 MQTT 命令
-mosquitto_pub -h 127.0.0.1 -p 1884 -t amr/cmd/mode -m '{"mode":"auto"}'
-mosquitto_pub -h 127.0.0.1 -p 1884 -t amr/cmd/estop -m '{"stop":true}'
-mosquitto_pub -h 127.0.0.1 -p 1884 -t amr/cmd/return_charge -m '{}'
+# 其他 MQTT 命令（均用 gateway 账号）
+mosquitto_pub -h 127.0.0.1 -p 1884 -u gateway -P gateway-dev-pass -t amr/cmd/mode -m '{"mode":"auto"}'
+mosquitto_pub -h 127.0.0.1 -p 1884 -u gateway -P gateway-dev-pass -t amr/cmd/estop -m '{"stop":true}'
+mosquitto_pub -h 127.0.0.1 -p 1884 -u gateway -P gateway-dev-pass -t amr/cmd/return_charge -m '{}'
 
 # trace 实时追踪
 tail -f /tmp/amr_trace.jsonl | python3 -c '
@@ -643,6 +659,8 @@ for line in sys.stdin:
 ros2 service call /global_costmap/clear_entirely_global_costmap std_srvs/srv/Empty
 ```
 
+> 账号收口：只有 `gateway` 能 publish `amr/cmd/#`，`robot` 只读指令、写回报；匿名连接已被拒绝。App 不直连 MQTT，正常业务请走网关 HTTP。
+
 ### 5.2 **故障注入**（验证 App 的 UNKNOWN / STALE / 降级）
 
 停掉 launch 里的 mission_bridge，手动起带 fault 参数的实例：
@@ -653,18 +671,18 @@ env -u LD_LIBRARY_PATH bash -lc '
   source /opt/ros/jazzy/setup.bash
   source /home/dxw/amr/amr_sim_ws/install/setup.bash
   export ROS_HOME=/tmp/ros_home ROS_LOG_DIR=/tmp/ros_logs
-  # A: 丢 ACK — App 1.2s 后进入 UNKNOWN
+  # A: 丢 ACK — 网关按 ack_timeout_ms（默认 1.5s）自动重发/判 UNKNOWN；App 只跟随 WS task 事件
   timeout 600 ros2 run amr_comm mission_bridge.py --ros-args -p fault_drop_ack:=true
-  # B: 丢 Result — App 120s 后进入 UNKNOWN；重发同 cmd_id 可收敛
+  # B: 丢 Result — 网关 120s 后判 UNKNOWN；重发同 cmd_id 可收敛
   timeout 600 ros2 run amr_comm mission_bridge.py --ros-args -p fault_drop_result:=true
-  # C: 稀疏 Feedback — 关闭心跳，App 3s 无 Feedback 后进入 STALE
+  # C: 稀疏 Feedback — 关闭心跳，网关 4s 无 Feedback 后判 STALE
   timeout 600 ros2 run amr_comm mission_bridge.py --ros-args -p heartbeat_feedback:=false
   # D: 模拟延迟（会阻塞 executor，小延迟测试）
   timeout 600 ros2 run amr_comm mission_bridge.py --ros-args -p fault_extra_delay_ms:=500
 '
 ```
 
-trace 会写出 `ack_dropped_by_fault` / `result_dropped_by_fault`，App 侧指令卡片的状态机（见 `lib/models/command.dart`）会相应迁移到 UNKNOWN / STALE。
+trace 会写出 `ack_dropped_by_fault` / `result_dropped_by_fault`；超时/重发/UNKNOWN 判定在网关 `tick()` 与状态机（`amr_gateway/tasks.py`），App 只按 WS `task` 事件迁移到 UNKNOWN / STALE。
 
 ### 5.3 日志与文件位置
 
@@ -688,6 +706,7 @@ trace 会写出 `ack_dropped_by_fault` / `result_dropped_by_fault`，App 侧指�
 
 ```bash
 ros2 topic hz /clock   # 应有数据
+mosquitto_sub -h 127.0.0.1 -p 1884 -u robot -P robot-dev-pass -t amr/status/battery -C 1   # 应有电量消息
 ```
 
 **修复**：确认 `bridge_topics.yaml` 包含 `/clock` 桥（`rosgraph_msgs/Clock ← gz.msgs.Clock`）。
@@ -706,7 +725,7 @@ ros2 topic hz /clock   # 应有数据
 
 ### Q4：WebRTC 不通 / 视频 LOST 持续重连
 
-**原因**：`adb reverse` 不支持 UDP，WebRTC ICE 拿不到 UDP 候选对，协商失败。App 不会自动切源，需在相机页手动切到 RTSP / rosbridge JPEG。
+**原因**：`adb reverse` 不支持 UDP，WebRTC ICE 拿不到 UDP 候选对，协商失败。App 不会自动切源，需在相机页手动切到 RTSP。
 
 **修复**（推荐）：改用 WSL mirrored IP + `--dart-define=AMR_HOST=<wsl_ip>` + Windows 防火墙放行 UDP 8189。确认 WSL 侧 MediaMTX 启动时有这两行：
 
@@ -739,13 +758,13 @@ curl -s -D - -o /tmp/a.sdp -X POST -H 'Content-Type: application/sdp' \
 
 **修复**：若确实卡死，设置 `JAVA_HOME=C:\Users\dxw\.jdks\jbr-21.0.11`。
 
-### Q7：模拟器无法连接 rosbridge/MQTT/WHEP
+### Q7：模拟器无法连接网关（8080/8081）/WHEP
 
-**现象**：App 顶栏 WS/MQTT 灰色；相机页 `connecting` 后 LOST。
+**现象**：App 顶栏 GW/WS 灰色；相机页 `connecting` 后 LOST。
 
 **修复**：
 - 用 mirrored IP 方式：`--dart-define=AMR_HOST=<wsl_ip>`，同时放行 Windows 防火墙（见 §3.3）
-- 用 adb reverse 方式：确认 §3.3 的四条规则都在（尤其是 `tcp:8889`），`adb reverse --list` 每条端口都在
+- 用 adb reverse 方式：确认 §3.3 的四条规则都在（`tcp:8080` / `tcp:8081` / `tcp:8889` / `tcp:18554`），`adb reverse --list` 每条端口都在；缺 8080/8081 就连不上网关
 - `10.0.2.2` 已被防火墙拦截，**不要再用**
 
 ### Q8：启动瞬间误触发低电量
@@ -786,12 +805,14 @@ pkill -f gst_video_source.py; sleep 2
 # full_bringup 会自动拉起新的
 ```
 
-### Q12：mission_bridge 对 MQTT 回执只发一次，App 收到重复怎么办
+### Q12：网关对 MQTT 回执只转发一次，App 收到重复怎么办
 
 **设计语义**：
-- **ACK/Result QoS1**：可重复投递；bridge 不重复发同 `cmd_id` 的 ACK/Result；App 也按 `cmd_id` 幂等处理
-- **Feedback QoS0**：不保证投递；App 靠 1Hz 心跳判断断流
-- **cmd_id 幂等**：重复信封 → `duplicate_replayed`，不重复执行
+- **ACK/Result QoS1**：可重复投递；网关不重复转发同 `cmd_id` 的 ACK/Result；App 也按 `cmd_id` 幂等处理
+- **Feedback QoS0**：不保证投递；网关按 `feedback_timeout_ms`（默认 4s）判 STALE
+- **cmd_id 幂等**：重复信封 → `duplicate_replayed`，不重复执行；判定在网关 `tick()`/状态机
+
+> 排查看网关日志 `~/.amr_gateway/gateway.log`；App 只展示 WS `task` 事件，不自行判定状态。
 
 ### Q13：mission_bridge 报 `NAV2_UNAVAILABLE`
 
@@ -808,7 +829,7 @@ for n in bt_navigator planner_server behavior_server; do ros2 lifecycle get /$n;
 
 ### Q14：故障注入后没有任何回执（ack_dropped_by_fault）
 
-**现象**：App 指令卡片 1.2s 后进入 UNKNOWN。
+**现象**：网关在 `ack_timeout_ms`（默认 1.5s）后自动重发/判 UNKNOWN，App 指令卡片跟随 WS `task` 事件显示 UNKNOWN。
 
 **原因**：这是**预期行为**。trace 应能看到 `ack_dropped_by_fault`。
 
@@ -818,6 +839,8 @@ for n in bt_navigator planner_server behavior_server; do ros2 lifecycle get /$n;
 ps aux | grep mission_bridge
 # 期望看到 -p fault_drop_ack:=true / fault_drop_result:=true
 ```
+
+网关日志 `~/.amr_gateway/gateway.log` 应能看到对应的重发 / UNKNOWN 记录。
 
 ### Q15：trace 中 `NAV2_ERROR_204` / `NAV2_ERROR_208`
 
@@ -858,10 +881,11 @@ ps aux | grep mission_bridge
 ## 7. 启动顺序总览
 
 ```
-┌─ [WSL 终端1] mosquitto -c mosquitto.conf ──────────── TCP 1884 + WS 9002
+┌─ [WSL 终端1] mosquitto -c mosquitto.conf ──────────── TCP 1884 + WS 9002（仅网关/仿真端）
+├─ [WSL 终端1b] 业务网关（amr_start.sh 默认拉起）────── HTTP 8080 + WS 8081（App 唯一业务出口）
 ├─ [WSL 终端2] full_bringup.launch.py ──────────────────── 顺序启动:
 │   │   t=0s:  Gazebo + ros_gz_bridge + MediaMTX (18554/8889/8189/18888)
-│   │   t=5s:  rosbridge 9090 + mqtt_client + image_transport republish（拍照）
+│   │   t=5s:  rosbridge 9090 + mqtt_client + image_transport republish（网关快照）
 │   │   t=6s:  mission_bridge（MQTT → Nav2 Action，ACK/Feedback/Result/cancel）
 │   │   t=8s:  gst_video_source（GStreamer appsrc → tee → x264enc ×2 → RTSP）
 │   │   t=10s: Nav2（AMCL + bt_navigator + planner_server...）
@@ -872,22 +896,22 @@ ps aux | grep mission_bridge
 ├─ [Windows]  启动 Android 模拟器 Small_Phone
 ├─ [Windows]  方式 A（推荐）: mirrored IP + 防火墙放行 UDP 8189
 │             flutter run -d emulator-5554 --dart-define=AMR_HOST=<wsl_ip>
-│             方式 B（退化）: adb reverse tcp:9090/1884/8889/18554
+│             方式 B（退化）: adb reverse tcp:8080/8081/8889/18554（9090/1884 仅调试时手动加）
 │             flutter run -d emulator-5554                 ← WebRTC 不通时需手动切 RTSP
 │
 └─ [WSL/Windows]  flutter build web --dart-define=AMR_HOST=localhost
-                  cd build/web && python3 -m http.server 8081
+                  cd build/web && python3 -m http.server 8090
                   ↓
-             App：地图 + 指令卡片（ACK/Feedback/Result 生命周期）
-                   + 相机页（WebRTC 预览 + 健康条 + 降级菜单）+ 拍照
-             Web：http://localhost:8081/#/dashboard
+             App：地图（HTTP PGM）+ 指令卡片（网关 HTTP 下发 / WS 事件）
+                   + 相机页（WebRTC 预览 + 健康条 + 降级菜单）+ 网关快照拍照
+             Web：http://localhost:8090/#/dashboard
                   四区域（地图/视频/状态/巡检），视频走 HLS（媒体同一套）
 ```
 
 清理命令：
 
 ```bash
-pkill -9 -f "mission_bridge.py|gst_video_source.py|mediamtx|full_bringup.launch.py|mosquitto" 2>/dev/null
+pkill -9 -f "mission_bridge.py|gst_video_source.py|mediamtx|full_bringup.launch.py|amr_gateway.main|mosquitto" 2>/dev/null
 rm -f /tmp/amr_trace.jsonl /tmp/amr-gst-registry.bin
 ```
 
@@ -912,7 +936,9 @@ rm -f /tmp/amr_trace.jsonl /tmp/amr-gst-registry.bin
 
 ## 9. Windows 侧必做（每次模拟器重启）
 
-> **启动 App 前先按 [WINDOWS侧操作手册.md](WINDOWS侧操作手册.md) 完成 Windows 侧步骤，否则 App 会连不上 rosbridge/MQTT，地图页一直停在「等待地图数据…」。**
+> **启动 App 前先按 [WINDOWS侧操作手册.md](WINDOWS侧操作手册.md) 完成 Windows 侧步骤，否则 App 会连不上业务网关 8080/8081，地图页一直停在「等待地图数据…」。**
 
-`amr_start.sh` 只覆盖 WSL 仿真端；模拟器端口映射（`adb reverse`）和防火墙放行必须在 Windows 侧手动完成（模拟器每次重启后 `adb reverse` 都会失效），具体命令与自检见该手册。
+`amr_start.sh` 负责 WSL 侧仿真链路（默认含业务网关 8080/8081）；模拟器端口映射（`adb reverse`）和防火墙放行必须在 Windows 侧手动完成（模拟器每次重启后 `adb reverse` 都会失效），具体命令与自检见该手册。
+
+> App 连不上网关 8080/8081 → 检查 WSL 侧 `amr_start.sh` 是否启动网关（`curl http://<host>:8080/healthz`）、防火墙是否放行、`adb reverse --list` 是否含 `tcp:8080` / `tcp:8081`。
 
