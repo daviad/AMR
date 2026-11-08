@@ -1,238 +1,247 @@
-import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:mqtt_client/mqtt_client.dart';
 
-import '../../comm/mqtt_client.dart';
-import '../../core/message_models.dart';
-import '../../core/topic_mapping.dart';
+import '../../comm/gateway_client.dart';
+import '../../core/constants.dart';
 import '../../models/command.dart';
-import '../comm/mqtt_provider.dart';
+import '../comm/gateway_provider.dart';
 
-/// 业务指令控制面：MQTT 单一权威通道 + 应用层状态机。
+/// 业务指令控制面：HTTP 下发 + WS 回执 + 网关侧状态机。
 ///
-/// 职责：
-///  - 生成 cmd_id / trace_id，发布 amr/cmd/goal；
-///  - 订阅 amr/cmd/ack、amr/cmd/feedback、amr/cmd/result，驱动状态机；
-///  - ACK / Feedback / Result 超时，不永久悬挂；
-///  - 取消、重发（同 cmd_id）与结构化 trace 日志。
+/// 与旧实现的关键区别（见 docs/架构-网关收口.md §8）：
+///  - cmd_id / trace_id 由网关生成，App 不再自己拼时间戳；
+///  - 超时、重试、取消的权威状态在网关，本类只做 UI 映射与 trace 日志；
+///  - 重试走 `POST /tasks/{id}/retry`，网关会重新生成 timestamp_ms，
+///    不再出现“复用旧时间戳 → 必然 EXPIRED”的缺陷；
+///  - WS 断线重连后调用 resync() 用 HTTP 对齐任务状态。
 class MissionCommandCenter extends ChangeNotifier {
-  MissionCommandCenter(this._ref) {
-    _subscribe();
-  }
+  MissionCommandCenter(this._ref);
 
   final Ref _ref;
   CommandStateMachine? _machine;
-  Map<String, dynamic>? _lastEnvelope;
-
-  StreamSubscription<Map<String, dynamic>>? _ackSub;
-  StreamSubscription<Map<String, dynamic>>? _feedbackSub;
-  StreamSubscription<Map<String, dynamic>>? _resultSub;
-
-  Timer? _ackTimer;
-  Timer? _feedbackTimer;
-  Timer? _resultTimer;
-  Timer? _cancelTimer;
-  bool _disposed = false;
 
   CommandStateMachine? get machine => _machine;
   bool get hasCommand => _machine != null;
 
-  AppMqttClient get _mqtt => _ref.read(mqttClientProvider);
+  /// 最近一次下发失败的原因（供 UI 提示，可忽略）。
+  String? lastError;
 
-  void _subscribe() {
-    _ackSub = _mqtt
-        .subscribe(TopicMapping.cmdAck, qos: MqttQos.atLeastOnce)
-        .listen(_onAckMessage);
-    _feedbackSub = _mqtt
-        .subscribe(TopicMapping.cmdFeedback, qos: MqttQos.atMostOnce)
-        .listen(_onFeedbackMessage);
-    _resultSub = _mqtt
-        .subscribe(TopicMapping.cmdResult, qos: MqttQos.atLeastOnce)
-        .listen(_onResultMessage);
-  }
+  GatewayClient get _gateway => _ref.read(gatewayClientProvider);
 
-  /// 下发导航指令。上一指令未终态时拒绝并返回 false（由 UI 提示先取消）。
-  bool sendNavigate(double x, double y, double theta, {int ttlMs = 8000}) {
+  /// 下发导航指令。上一指令未终态时拒绝并返回 false（提示先取消）。
+  Future<bool> sendNavigate(
+    double x,
+    double y,
+    double theta, {
+    int ttlMs = 8000,
+  }) async {
     final current = _machine;
     if (current != null && current.phase.isActive) {
+      lastError = '当前还有未完成的任务（${current.phase.label}）';
       return false;
     }
     final now = DateTime.now().millisecondsSinceEpoch;
-    final cmdId = newCommandId();
-    final traceId = newCommandId('trace');
-    final m = CommandStateMachine(
-      cmdId: cmdId,
-      traceId: traceId,
-      createdAtMs: now,
-      ttlMs: ttlMs,
-    );
-    _machine = m;
-    _lastEnvelope = buildGoalCommand(
-      cmdId: cmdId,
-      traceId: traceId,
-      timestampMs: now,
-      ttlMs: ttlMs,
-      x: x,
-      y: y,
-      theta: theta,
-    );
-    _log(m, 'command_created', extra: {'x': x, 'y': y, 'theta': theta});
-    if (!_mqtt.publishCommand(TopicMapping.cmdGoal, _lastEnvelope!)) {
-      m.onPublishFailed(now, 'MQTT 未连接');
-      _log(m, 'publish_failed');
+    try {
+      final resp = await _gateway.createNavigate(
+        x: x,
+        y: y,
+        theta: theta,
+        ttlMs: ttlMs,
+        holder: AppConstants.controlHolder,
+      );
+      final cmdId = '${resp['cmd_id'] ?? ''}';
+      final traceId = '${resp['trace_id'] ?? ''}';
+      if (cmdId.isEmpty) {
+        lastError = '网关未返回 cmd_id';
+        return false;
+      }
+      final m = CommandStateMachine(
+        cmdId: cmdId,
+        traceId: traceId,
+        createdAtMs: now,
+        ttlMs: ttlMs,
+      );
+      _machine = m;
+      m.onPublished(now);
+      lastError = null;
+      _log(m, 'gateway_accepted', extra: {'x': x, 'y': y, 'theta': theta});
       _emit();
+      return true;
+    } on GatewayException catch (e) {
+      lastError = _humanize(e);
+      debugPrint('[CMD_TRACE] create_failed ${e.code} ${e.message}');
+      return false;
+    } catch (e) {
+      lastError = '网关不可达：$e';
+      debugPrint('[CMD_TRACE] create_error $e');
       return false;
     }
-    m.onPublished(now);
-    _log(m, 'command_published');
-    _startTimers(m);
-    _emit();
-    return true;
   }
 
-  /// 取消当前指令（取消自身也带 cmd_id，终态由 Result 回传）。
-  bool cancel() {
+  /// 取消（网关发布独立 cancel cmd_id，终态由 Result 回传）。
+  Future<bool> cancel() async {
     final m = _machine;
     if (m == null || m.phase.isTerminal) return false;
-    final now = DateTime.now().millisecondsSinceEpoch;
-    final cancelId = newCommandId('cancel');
-    final payload = buildCancelCommand(
-      cmdId: cancelId,
-      traceId: m.traceId,
-      targetCmdId: m.cmdId,
-    );
-    if (!_mqtt.publishCommand(TopicMapping.cmdCancel, payload)) {
+    try {
+      await _gateway.cancelTask(m.cmdId);
+      m.onCancelRequested(DateTime.now().millisecondsSinceEpoch);
+      _log(m, 'cancel_requested');
+      _emit();
+      return true;
+    } on GatewayException catch (e) {
+      lastError = _humanize(e);
+      debugPrint('[CMD_TRACE] cancel_failed ${e.code} ${e.message}');
       return false;
     }
-    m.onCancelRequested(now);
-    _log(m, 'cancel_published');
-    _cancelTimer?.cancel();
-    _cancelTimer = Timer(const Duration(seconds: 5), () {
-      if (_machine != m || m.phase.isTerminal) return;
-      m.onCancelTimeout(DateTime.now().millisecondsSinceEpoch);
-      _log(m, 'cancel_timeout');
-      _emit();
-    });
-    _emit();
-    return true;
   }
 
-  /// 重发同一 cmd_id。服务端按 cmd_id 幂等：不重复执行物理动作，只回放结果。
-  bool retry() {
+  /// 重试：同 cmd_id，网关重新生成时间戳（修复旧版 EXPIRED 缺陷）。
+  Future<bool> retry() async {
     final m = _machine;
-    final envelope = _lastEnvelope;
-    if (m == null || envelope == null || m.phase.isTerminal) return false;
-    if (!_mqtt.publishCommand(TopicMapping.cmdGoal, envelope)) return false;
-    m.onRepublished(DateTime.now().millisecondsSinceEpoch);
-    _log(m, 'command_republished');
-    _startTimers(m);
-    _emit();
-    return true;
+    if (m == null || m.phase.isTerminal) return false;
+    try {
+      await _gateway.retryTask(m.cmdId);
+      m.onRepublished(DateTime.now().millisecondsSinceEpoch);
+      _log(m, 'command_retried');
+      _emit();
+      return true;
+    } on GatewayException catch (e) {
+      lastError = _humanize(e);
+      debugPrint('[CMD_TRACE] retry_failed ${e.code} ${e.message}');
+      return false;
+    }
   }
 
   void clear() {
     if (_machine != null && _machine!.phase.isActive) return;
-    _cancelTimers();
     _machine = null;
-    _lastEnvelope = null;
     notifyListeners();
   }
 
-  void _startTimers(CommandStateMachine m) {
-    _ackTimer?.cancel();
-    _feedbackTimer?.cancel();
-    _resultTimer?.cancel();
-    _ackTimer = Timer(Duration(milliseconds: m.ackTimeoutMs), () {
-      if (_machine != m || m.phase.isTerminal) return;
-      m.onAckTimeout(DateTime.now().millisecondsSinceEpoch);
-      _log(m, 'ack_timeout');
-      _emit();
-    });
-    _feedbackTimer = Timer(Duration(milliseconds: m.feedbackTimeoutMs), () {
-      if (_machine != m || m.phase.isTerminal) return;
-      m.onFeedbackTimeout(DateTime.now().millisecondsSinceEpoch);
-      _log(m, 'feedback_timeout');
-      _emit();
-    });
-    _resultTimer = Timer(const Duration(seconds: 120), () {
-      if (_machine != m || m.phase.isTerminal) return;
-      m.onResultTimeout(DateTime.now().millisecondsSinceEpoch);
-      _log(m, 'result_timeout');
-      _emit();
-    });
-  }
-
-  void _cancelTimers() {
-    _ackTimer?.cancel();
-    _feedbackTimer?.cancel();
-    _resultTimer?.cancel();
-    _cancelTimer?.cancel();
-    _ackTimer = null;
-    _feedbackTimer = null;
-    _resultTimer = null;
-    _cancelTimer = null;
-  }
-
-  void _onAckMessage(Map<String, dynamic> json) {
+  // ───────────────── WS 推送入口 ─────────────────
+  void onGatewayMessage(Map<String, dynamic> msg) {
+    if (msg['type'] != 'task') return;
     final m = _machine;
-    final ack = CommandAck.fromJson(json);
-    if (m == null || ack.cmdId != m.cmdId || m.phase.isTerminal) return;
-    m.onAck(ack, DateTime.now().millisecondsSinceEpoch);
-    _log(m, 'ack_received',
-        extra: {'status': ack.status, 'latency_ms': ack.latencyMs});
-    if (m.phase == CommandPhase.failed) {
-      _cancelTimers();
-    } else {
-      _ackTimer?.cancel();
-      _ackTimer = null;
-      _startFeedbackTimer(m);
+    if (m == null || msg['cmd_id'] != m.cmdId) return;
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final event = '${msg['event'] ?? ''}';
+    final data = msg['data'] is Map
+        ? Map<String, dynamic>.from(msg['data'] as Map)
+        : <String, dynamic>{};
+    switch (event) {
+      case 'ack':
+        m.onAck(CommandAck.fromJson(data), now);
+        break;
+      case 'feedback':
+        m.onFeedback(CommandFeedback.fromJson(data), now);
+        break;
+      case 'result':
+        m.onResult(_resultFrom(event, data, msg['task']), now);
+        break;
+      case 'retry':
+      case 'publish':
+        m.onRepublished(now);
+        break;
+      case 'state':
+        _applyServerPhase(m, '${msg['phase'] ?? ''}', msg, now);
+        break;
+      default:
+        break;
     }
-    _emit();
-  }
-
-  void _onFeedbackMessage(Map<String, dynamic> json) {
-    final m = _machine;
-    final fb = CommandFeedback.fromJson(json);
-    if (m == null || fb.cmdId != m.cmdId || m.phase.isTerminal) return;
-    m.onFeedback(fb, DateTime.now().millisecondsSinceEpoch);
-    _log(m, 'feedback_received', extra: {
-      'nav_state': fb.navState,
-      'recoveries': fb.recoveries,
-      'distance_remaining': fb.distanceRemaining,
+    _log(m, '${event}_received', extra: {
+      'phase': msg['phase'],
     });
-    _startFeedbackTimer(m);
     _emit();
   }
 
-  void _onResultMessage(Map<String, dynamic> json) {
+  /// WS 重连后调用：用 HTTP 把任务状态补齐（WS 不做消息回放）。
+  Future<void> resync() async {
     final m = _machine;
-    final result = CommandResult.fromJson(json);
-    if (m == null || result.cmdId != m.cmdId) return;
-    if (m.phase.isTerminal) {
-      _log(m, 'duplicate_result_ignored', extra: {'status': result.status});
-      return;
-    }
-    m.onResult(result, DateTime.now().millisecondsSinceEpoch);
-    _log(m, 'result_received', extra: {
-      'status': result.status,
-      'error_code': result.errorCode,
-      'latency_ms': result.latencyMs,
-    });
-    _cancelTimers();
-    _emit();
-  }
-
-  void _startFeedbackTimer(CommandStateMachine m) {
-    _feedbackTimer?.cancel();
-    _feedbackTimer = Timer(Duration(milliseconds: m.feedbackTimeoutMs), () {
-      if (_machine != m || m.phase.isTerminal) return;
-      m.onFeedbackTimeout(DateTime.now().millisecondsSinceEpoch);
-      _log(m, 'feedback_timeout');
+    if (m == null) return;
+    try {
+      final task = await _gateway.getTask(m.cmdId);
+      final now = DateTime.now().millisecondsSinceEpoch;
+      _applyServerPhase(m, '${task['phase'] ?? ''}', task, now);
       _emit();
-    });
+    } on GatewayException catch (e) {
+      debugPrint('[CMD_TRACE] resync_failed ${e.code}');
+    }
+  }
+
+  void _applyServerPhase(
+    CommandStateMachine m,
+    String phase,
+    Map<String, dynamic> source,
+    int now,
+  ) {
+    switch (phase) {
+      case 'SUCCEEDED':
+      case 'CANCELLED':
+      case 'FAILED':
+      case 'TIMEOUT':
+        m.onResult(
+          CommandResult(
+            cmdId: m.cmdId,
+            traceId: m.traceId,
+            status: phase == 'TIMEOUT' ? 'FAILED' : phase,
+            errorCode: source['error_code'] as String?,
+            errorMessage: source['error_msg'] as String?,
+          ),
+          now,
+        );
+        break;
+      case 'STALE':
+        m.onFeedbackTimeout(now);
+        break;
+      case 'UNKNOWN':
+        m.onAckTimeout(now);
+        break;
+      case 'ACCEPTED':
+      case 'EXECUTING':
+      case 'PUBLISHED':
+      case 'CANCEL_REQUESTED':
+        if (m.phase == CommandPhase.unknown || m.phase == CommandPhase.stale) {
+          m.onRepublished(now);
+        }
+        break;
+      default:
+        break;
+    }
+  }
+
+  CommandResult _resultFrom(
+    String event,
+    Map<String, dynamic> data,
+    Object? taskSnapshot,
+  ) {
+    if (data.isNotEmpty) return CommandResult.fromJson(data);
+    final task = taskSnapshot is Map ? taskSnapshot : const <String, dynamic>{};
+    final result = task['result'] is Map ? task['result'] as Map : null;
+    final status = '${result?['status'] ?? task['phase'] ?? 'FAILED'}';
+    return CommandResult(
+      cmdId: '${task['cmd_id'] ?? ''}',
+      traceId: task['trace_id'] as String?,
+      status: status,
+      errorCode: task['error_code'] as String?,
+      errorMessage: task['error_msg'] as String?,
+    );
+  }
+
+  String _humanize(GatewayException e) {
+    switch (e.code) {
+      case 'LOCKED':
+        return '设备正被其他端控制（Web 大屏或另一台手机）';
+      case 'TASK_ACTIVE':
+        return '已有任务在执行，请先取消';
+      case 'MQTT_UNAVAILABLE':
+        return '控制通道断开，指令没有发出';
+      case 'RETRY_EXHAUSTED':
+        return '重试次数已用尽';
+      default:
+        return '${e.code}: ${e.message}';
+    }
   }
 
   void _log(CommandStateMachine m, String event, {Map<String, dynamic>? extra}) {
@@ -249,24 +258,23 @@ class MissionCommandCenter extends ChangeNotifier {
   }
 
   void _emit() {
-    if (_disposed) return;
     notifyListeners();
-  }
-
-  @override
-  void dispose() {
-    _disposed = true;
-    _cancelTimers();
-    _ackSub?.cancel();
-    _feedbackSub?.cancel();
-    _resultSub?.cancel();
-    super.dispose();
   }
 }
 
 final missionCommandProvider =
     ChangeNotifierProvider<MissionCommandCenter>((ref) {
   final center = MissionCommandCenter(ref);
+  // WS 推送 → 状态机
+  ref.listen<AsyncValue<Map<String, dynamic>>>(gatewayMessageProvider,
+      (previous, next) {
+    final msg = next.valueOrNull;
+    if (msg != null) center.onGatewayMessage(msg);
+  });
+  // WS 重连 → HTTP 对齐状态
+  ref.listen<AsyncValue<bool>>(gatewayConnectedProvider, (previous, next) {
+    if (next.valueOrNull == true) center.resync();
+  });
   ref.onDispose(center.dispose);
   return center;
 });

@@ -1,0 +1,29 @@
+# mosquitto ACL —— 控制通道单写者（详见 docs/架构-网关收口.md §7）
+#
+# 默认段（所有已认证客户端）：只读回报，不能发布指令
+topic read amr/cmd/ack
+topic read amr/cmd/feedback
+topic read amr/cmd/result
+topic read amr/status/#
+topic read amr/alert
+topic read amr/trace
+
+# 网关：唯一可以 publish amr/cmd/# 的客户端
+user gateway
+topic write amr/cmd/#
+topic read amr/cmd/ack
+topic read amr/cmd/feedback
+topic read amr/cmd/result
+topic read amr/status/#
+topic read amr/alert
+topic read amr/trace
+
+# ROS mqtt_client 桥：只读指令、写回报/状态
+user robot
+topic read amr/cmd/#
+topic write amr/cmd/ack
+topic write amr/cmd/feedback
+topic write amr/cmd/result
+topic write amr/status/#
+topic write amr/alert
+topic write amr/trace

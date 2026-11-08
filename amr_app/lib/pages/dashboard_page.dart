@@ -1,8 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../comm/gateway_client.dart';
 import '../core/constants.dart';
-import '../core/topic_mapping.dart';
 import '../map/layers/base_map_layer.dart';
 import '../map/layers/inspection_points_layer.dart';
 import '../map/layers/path_layer.dart';
@@ -10,8 +10,7 @@ import '../map/layers/robot_layer.dart';
 import '../map/map_view.dart';
 import '../models/occupancy_grid.dart';
 import '../models/robot_status.dart';
-import '../providers/comm/mqtt_provider.dart';
-import '../providers/comm/rosbridge_provider.dart';
+import '../providers/comm/gateway_provider.dart';
 import '../providers/data/battery_provider.dart';
 import '../providers/data/inspection_provider.dart';
 import '../providers/data/map_provider.dart';
@@ -186,7 +185,7 @@ class _DashboardPageState extends ConsumerState<DashboardPage> {
               children: [
                 Expanded(
                   child: ElevatedButton.icon(
-                    onPressed: () => _publishCommand(TopicMapping.cmdInspectionStart, {}),
+                    onPressed: () => _sendCommand('inspection_start'),
                     icon: const Icon(Icons.play_arrow, size: 18),
                     label: const Text('开始'),
                     style: ElevatedButton.styleFrom(backgroundColor: Colors.green[700]),
@@ -195,7 +194,7 @@ class _DashboardPageState extends ConsumerState<DashboardPage> {
                 const SizedBox(width: 8),
                 Expanded(
                   child: ElevatedButton.icon(
-                    onPressed: () => _publishCommand(TopicMapping.cmdInspectionStop, {}),
+                    onPressed: () => _sendCommand('inspection_stop'),
                     icon: const Icon(Icons.stop, size: 18),
                     label: const Text('停止'),
                     style: ElevatedButton.styleFrom(backgroundColor: Colors.red[700]),
@@ -209,8 +208,21 @@ class _DashboardPageState extends ConsumerState<DashboardPage> {
     );
   }
 
-  void _publishCommand(String topic, Map<String, dynamic> payload) {
-    ref.read(mqttClientProvider).publishCommand(topic, payload);
+  /// 巡检启停经网关 HTTP 下发（网关是唯一的 MQTT 发布者）。
+  Future<void> _sendCommand(String name) async {
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      await ref
+          .read(gatewayClientProvider)
+          .sendCommand(name, const <String, dynamic>{});
+      messenger.showSnackBar(SnackBar(content: Text('已发送 $name')));
+    } on GatewayException catch (e) {
+      messenger.showSnackBar(
+        SnackBar(content: Text('发送失败 ${e.code}: ${e.message}')),
+      );
+    } catch (e) {
+      messenger.showSnackBar(SnackBar(content: Text('网关不可达: $e')));
+    }
   }
 }
 
@@ -236,20 +248,26 @@ class _StatusRow extends StatelessWidget {
 class _ConnIndicator extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final mqttState = ref.watch(mqttConnectionProvider);
-    final rosState = ref.watch(rosConnectionProvider);
-    final mqttOk = mqttState.value ?? false;
-    final rosOk = rosState.value ?? false;
+    final health = ref.watch(gatewayHealthProvider).valueOrNull;
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: [
-        Icon(Icons.circle, size: 10, color: mqttOk ? Colors.green : Colors.red),
-        const SizedBox(width: 4),
-        const Text('MQTT', style: TextStyle(fontSize: 11, color: Colors.white54)),
+        _dot('GW', health?.http ?? false),
         const SizedBox(width: 12),
-        Icon(Icons.circle, size: 10, color: rosOk ? Colors.green : Colors.red),
+        _dot('WS', health?.ws ?? false),
+        const SizedBox(width: 12),
+        _dot('MQTT', health?.mqtt ?? false),
+      ],
+    );
+  }
+
+  Widget _dot(String label, bool ok) {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Icon(Icons.circle, size: 10, color: ok ? Colors.green : Colors.red),
         const SizedBox(width: 4),
-        const Text('ROS', style: TextStyle(fontSize: 11, color: Colors.white54)),
+        Text(label, style: const TextStyle(fontSize: 11, color: Colors.white54)),
       ],
     );
   }

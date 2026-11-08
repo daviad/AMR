@@ -1,13 +1,11 @@
 import 'dart:async';
-import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
 import 'package:video_player/video_player.dart';
 
-import '../providers/comm/mqtt_provider.dart';
-import '../providers/comm/rosbridge_provider.dart';
+import '../providers/comm/gateway_provider.dart';
 import '../services/capture_saver_io.dart'
     if (dart.library.html) '../services/capture_saver_web.dart';
 import '../services/photo_capture_service.dart';
@@ -46,8 +44,8 @@ class _CameraPageState extends ConsumerState<CameraPage> {
     final player = manager.player;
     final health = manager.health;
     final source = manager.currentSource;
-    final mqttConnected =
-        ref.watch(mqttConnectionProvider).valueOrNull ?? false;
+    final gatewayHealth = ref.watch(gatewayHealthProvider).valueOrNull;
+    final controlOnline = gatewayHealth?.canSendCommands ?? false;
 
     return Scaffold(
       appBar: AppBar(
@@ -91,10 +89,6 @@ class _CameraPageState extends ConsumerState<CameraPage> {
                 value: VideoSource.rtsp,
                 child: Text('RTSP（TCP 兼容）'),
               ),
-              PopupMenuItem(
-                value: VideoSource.rosbridge,
-                child: Text('rosbridge JPEG（旧链路）'),
-              ),
             ],
           ),
           IconButton(
@@ -105,7 +99,7 @@ class _CameraPageState extends ConsumerState<CameraPage> {
                     child: CircularProgressIndicator(strokeWidth: 2),
                   )
                 : const Icon(Icons.camera_alt),
-            tooltip: '拍照（CompressedImage 单帧）',
+            tooltip: '拍照（网关快照）',
             onPressed: _capturing ? null : _capturePhoto,
           ),
         ],
@@ -117,14 +111,14 @@ class _CameraPageState extends ConsumerState<CameraPage> {
             left: 8,
             top: 8,
             right: 8,
-            child: _healthBar(health, mqttConnected),
+            child: _healthBar(health, controlOnline),
           ),
           if (health.state == VideoHealthState.lost)
             Positioned(
               left: 16,
               right: 16,
               bottom: 16,
-              child: _lostBanner(health, mqttConnected),
+              child: _lostBanner(health, controlOnline),
             ),
         ],
       ),
@@ -159,31 +153,10 @@ class _CameraPageState extends ConsumerState<CameraPage> {
             child: VideoPlayer(controller),
           ),
         );
-      case VideoSource.rosbridge:
-        final frames = player.frameStream;
-        if (frames == null) {
-          return const Center(child: Text('rosbridge 模式无帧流'));
-        }
-        return StreamBuilder<Uint8List>(
-          stream: frames,
-          builder: (context, snapshot) {
-            final frame = snapshot.data;
-            if (frame == null) {
-              return const Center(child: Text('等待 JPEG 帧…'));
-            }
-            return Center(
-              child: Image.memory(
-                frame,
-                gaplessPlayback: true,
-                fit: BoxFit.contain,
-              ),
-            );
-          },
-        );
     }
   }
 
-  Widget _healthBar(VideoHealthSnapshot h, bool mqttConnected) {
+  Widget _healthBar(VideoHealthSnapshot h, bool controlOnline) {
     final color = _healthColor(h.state);
     final stats = <String>[
       if (h.fps > 0) '${h.fps.toStringAsFixed(1)} fps',
@@ -226,10 +199,10 @@ class _CameraPageState extends ConsumerState<CameraPage> {
               ),
             ),
             Text(
-              mqttConnected ? '控制面在线' : '控制面离线',
+              controlOnline ? '控制面在线' : '控制面离线',
               style: TextStyle(
                 fontSize: 11,
-                color: mqttConnected ? Colors.greenAccent : Colors.redAccent,
+                color: controlOnline ? Colors.greenAccent : Colors.redAccent,
               ),
             ),
           ],
@@ -238,7 +211,7 @@ class _CameraPageState extends ConsumerState<CameraPage> {
     );
   }
 
-  Widget _lostBanner(VideoHealthSnapshot h, bool mqttConnected) {
+  Widget _lostBanner(VideoHealthSnapshot h, bool controlOnline) {
     final last = h.lastFrameAt;
     final lastText = last == null
         ? '从未收到画面'
@@ -258,7 +231,7 @@ class _CameraPageState extends ConsumerState<CameraPage> {
             ),
             const SizedBox(height: 4),
             Text(
-              '$lastText · 控制通道${mqttConnected ? '仍可用' : '不可用'}',
+              '$lastText · 控制通道${controlOnline ? '仍可用' : '不可用'}',
               style: const TextStyle(color: Colors.white, fontSize: 12),
             ),
             if (h.error != null)
@@ -290,7 +263,7 @@ class _CameraPageState extends ConsumerState<CameraPage> {
     setState(() => _capturing = true);
     try {
       final bytes = await PhotoCaptureService(
-        ref.read(rosbridgeClientProvider),
+        ref.read(gatewayClientProvider),
       ).captureJpeg();
       final msg = await saveCapture(bytes);
       if (mounted) {
@@ -300,7 +273,7 @@ class _CameraPageState extends ConsumerState<CameraPage> {
     } on TimeoutException {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('拍照超时：/camera/image_raw/compressed 无数据')),
+          const SnackBar(content: Text('拍照超时：网关没有返回快照')),
         );
       }
     } catch (e) {

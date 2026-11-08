@@ -2,8 +2,8 @@
 
 | 目录 | 职责 | 入口 / 规模 |
 |---|---|---|
-| `core/` | 常量、topic、消息模型 | `constants.dart`、`topic_mapping.dart`、`message_models.dart` |
-| `comm/` | rosbridge / MQTT 传输 | `rosbridge_client.dart`(191)、`mqtt_client.dart`(157) |
+| `core/` | 常量、消息模型 | `constants.dart`、`message_models.dart` |
+| `comm/` | 业务网关传输 | `gateway_client.dart`（HTTP）、`gateway_ws_client.dart`（WS 推送） |
 | `providers/` | Riverpod 状态 | `providers/data/*`、`providers/comm/*`、`providers/navigation/*` |
 | `pages/` | 四个页面 | `map_page`(459)、`camera_page`(315)、`inspection_page`(256)、`dashboard_page`(256) |
 | `map/` | 渲染与图层 | `map_view.dart`、`map_painter.dart`、`layers/*` |

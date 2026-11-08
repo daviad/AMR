@@ -64,6 +64,7 @@ ASSUME_YES=0
 FORCE_KILL=0
 KEEP_ON_FAIL=0
 STOP_ONLY=0
+ENABLE_GATEWAY=1
 
 GRACE_SEC=5
 READY=0
@@ -91,6 +92,7 @@ usage() {
   --build           强制 colcon build
   --force           SIGTERM 等待缩短到 2s，并跳过确认
   --keep            启动失败时保留现场（默认回滚本次拉起的进程）
+  --no-gateway      不启动业务网关（仅调试用；App 的 HTTP/WS 业务通道不可用）
   --stop            只清理，不启动
   -h, --help        显示本帮助
 
@@ -110,6 +112,7 @@ while [ $# -gt 0 ]; do
     --yes)        ASSUME_YES=1 ;;
     --force)      FORCE_KILL=1; ASSUME_YES=1; GRACE_SEC=2 ;;
     --keep)       KEEP_ON_FAIL=1 ;;
+    --no-gateway) ENABLE_GATEWAY=0 ;;
     --stop)       STOP_ONLY=1 ;;
     -h|--help)    usage; exit 0 ;;
     *) c_err "未知参数：$1（--help 查看用法）"; exit 2 ;;
@@ -174,6 +177,7 @@ PATTERNS=(
   'cartographer_occupancy_grid_node'
   'rosbridge_websocket'
   'mqtt_client'
+  'amr_gateway.main'
   'mediamtx .*mediamtx\.yml'
   'mosquitto .*amr_comm/config/mosquitto\.conf'
   'ros_gz_sim/create'
@@ -397,6 +401,13 @@ start_mosquitto() {
   # RUNBOOK §2.2：终端 1 mosquitto（TCP 1884 + WS 9002）
   section "2c. 启动 MQTT Broker（RUNBOOK §2.2）"
   if [ "$DRY_RUN" -eq 1 ]; then echo "   [dry-run] mosquitto -c $MOSQ_CONF &"; return 0; fi
+  # ACL 收口后必须存在密码文件，否则 mosquitto 起不来
+  local auth_script="$WS/src/amr_gateway/scripts/setup_mqtt_auth.sh"
+  if [ -f "$auth_script" ]; then
+    bash "$auth_script" || { c_err "生成 mosquitto 密码文件失败"; return 1; }
+  else
+    c_warn "缺少 $auth_script，mosquitto 可能因 password_file 不存在而启动失败"
+  fi
   nohup mosquitto -c "$MOSQ_CONF" >"$LOG_DIR/mosquitto.log" 2>&1 &
   local pid=$!
   STARTED_PIDS+=("$pid")
@@ -405,9 +416,38 @@ start_mosquitto() {
     c_err "mosquitto 未起来，见 $LOG_DIR/mosquitto.log"; return 1; }
 }
 
+start_gateway() {
+  # 业务网关：HTTP 8080 / WS 8081，唯一 MQTT 发布者 + 唯一 rosbridge 客户端
+  section "2d. 启动业务网关（HTTP 8080 / WS 8081）"
+  if [ "$ENABLE_GATEWAY" -eq 0 ]; then
+    c_warn "--no-gateway：已跳过；App 只能使用旧版直连方式"
+    return 0
+  fi
+  local runner="$WS/src/amr_gateway/scripts/run_gateway.sh"
+  if [ ! -f "$runner" ]; then c_err "缺少 $runner"; return 1; fi
+  if [ "$DRY_RUN" -eq 1 ]; then echo "   [dry-run] bash $runner &"; return 0; fi
+
+  nohup bash "$runner" >"$LOG_DIR/gateway.stdout.log" 2>&1 &
+  local pid=$!
+  STARTED_PIDS+=("$pid")
+  echo "gateway|$pid" >> "$LOG_DIR/pids.txt"
+
+  local i ok=0
+  for i in $(seq 1 40); do
+    if curl -fsS "http://127.0.0.1:8080/healthz" >/dev/null 2>&1; then ok=1; break; fi
+    sleep 0.5
+  done
+  if [ "$ok" -eq 1 ]; then
+    c_ok "网关 /healthz 可达：$(curl -fsS http://127.0.0.1:8080/healthz 2>/dev/null)"
+  else
+    c_err "网关未在 20s 内就绪，见 $LOG_DIR/gateway.stdout.log / ~/.amr_gateway/gateway.log"
+    return 1
+  fi
+}
+
 start_bringup() {
   # RUNBOOK §2.3：终端 2 一键启动全链路（launch 内 TimerAction 排 0/5/6/8/10/12s）
-  section "2d. 启动全链路（RUNBOOK §2.3）"
+  section "2e. 启动全链路（RUNBOOK §2.3）"
   cd "$WS" || return 1
   local trace="$LOG_DIR/amr_trace.jsonl"
   local cmd=(ros2 launch amr_bringup full_bringup.launch.py
@@ -524,9 +564,19 @@ verify_all() {
     done
   fi
 
-  for p in 1884 9090 8889; do
+  for p in 1884 9090 8889 8080 8081; do
     if has_port "$p"; then c_ok "端口 $p 监听中"; else c_warn "端口 $p 未监听"; fi
   done
+
+  if has_port 8080 && curl -fsS http://127.0.0.1:8080/healthz >/dev/null 2>&1; then
+    local gw
+    gw="$(curl -fsS http://127.0.0.1:8080/healthz 2>/dev/null)"
+    c_ok "网关健康：$gw"
+    printf 'gateway_healthz\n%s\n' "$gw" >> "$vlog"
+  else
+    c_err "网关 /healthz 不可用（ENABLE_GATEWAY=$ENABLE_GATEWAY）"
+    fail=1
+  fi
 
   if pgrep -f 'gz sim' >/dev/null 2>&1; then c_ok "gz sim 进程在跑"; else c_err "gz sim 未运行"; fail=1; fi
   return $fail
@@ -624,6 +674,7 @@ start_mosquitto || exit 1
 start_bringup    || { c_err "全链路启动失败，见 $LOG_DIR/full_bringup.log"; exit 1; }
 send_initialpose
 activate_fallback
+start_gateway    || exit 1
 
 if verify_all; then
   READY=1

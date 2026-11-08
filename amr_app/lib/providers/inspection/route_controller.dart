@@ -1,11 +1,12 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:hive/hive.dart';
 
+import '../../comm/gateway_client.dart';
 import '../../core/message_models.dart';
-import '../../core/topic_mapping.dart';
 import '../../models/inspection_point.dart';
 import '../../models/inspection_route.dart';
-import '../comm/mqtt_provider.dart';
+import '../comm/gateway_provider.dart';
 import 'points_controller.dart';
 
 /// 巡检路线 Hive Box，在 main.dart 中 override 注入已打开的 Box。
@@ -13,7 +14,7 @@ final inspectionRoutesBoxProvider = Provider<Box<InspectionRoute>>(
   (ref) => throw UnimplementedError('需在 main.dart 中 override'),
 );
 
-/// 巡检路线列表（Hive 持久化 CRUD）+ 巡检启动/停止命令。
+/// 巡检路线列表（Hive 持久化 CRUD）+ 巡检启动/停止命令（经网关 HTTP）。
 final routeControllerProvider =
     NotifierProvider<RouteController, List<InspectionRoute>>(
         RouteController.new);
@@ -34,29 +35,40 @@ class RouteController extends Notifier<List<InspectionRoute>> {
     _refresh();
   }
 
-  /// 启动巡检：amr/cmd/inspection/start 携带完整路线点数据（QoS1）。
-  /// 路线/巡检点存于 App 端 Hive，启动时随命令全量下发给仿真端。
-  void startRoute(String routeId) {
+  /// 启动巡检：网关 `POST /commands {name: inspection_start}` 携带完整路线点。
+  Future<bool> startRoute(String routeId) async {
     final route = _box.get(routeId);
-    if (route == null) return;
+    if (route == null) return false;
     final pointsBox = ref.read(inspectionPointsBoxProvider);
     final points = route.pointIds
         .map((pid) => pointsBox.get(pid))
         .whereType<InspectionPoint>()
         .toList();
-    if (points.isEmpty) return;
-    ref.read(mqttClientProvider).publishCommand(
-          TopicMapping.cmdInspectionStart,
-          buildInspectionStartPayload(route, points),
-        );
+    if (points.isEmpty) return false;
+    try {
+      await ref.read(gatewayClientProvider).sendCommand(
+            'inspection_start',
+            buildInspectionStartPayload(route, points),
+          );
+      return true;
+    } on GatewayException catch (e) {
+      debugPrint('[INSPECTION] start_failed ${e.code} ${e.message}');
+      return false;
+    }
   }
 
-  /// 停止巡检：amr/cmd/inspection/stop {}（QoS1）。
-  void stopInspection() {
-    ref.read(mqttClientProvider).publishCommand(
-          TopicMapping.cmdInspectionStop,
-          buildEmptyPayload(),
-        );
+  /// 停止巡检：网关 `POST /commands {name: inspection_stop}`。
+  Future<bool> stopInspection() async {
+    try {
+      await ref.read(gatewayClientProvider).sendCommand(
+            'inspection_stop',
+            buildEmptyPayload(),
+          );
+      return true;
+    } on GatewayException catch (e) {
+      debugPrint('[INSPECTION] stop_failed ${e.code} ${e.message}');
+      return false;
+    }
   }
 
   void _refresh() {

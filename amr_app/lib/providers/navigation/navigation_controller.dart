@@ -16,9 +16,8 @@ class NavGoalState {
 }
 
 /// 点击导航控制器。
-/// 流程：点击地图 → setPending → 确认浮层 → confirm() 只走 MQTT 单一权威通道，
-/// 由 MissionCommandCenter 承担 cmd_id 幂等、ACK/Feedback/Result 与非终态兜底。
-/// 不再通过 rosbridge /goal_pose 双发，避免同一物理动作被执行两次。
+/// 流程：点击地图 → setPending → 确认浮层 → confirm() 经网关 HTTP 下发，
+/// 由 MissionCommandCenter 消费 WS 回执（ACK/Feedback/Result 与超时全在网关侧）。
 final navigationControllerProvider =
     NotifierProvider<NavigationController, NavGoalState>(
         NavigationController.new);
@@ -43,11 +42,11 @@ class NavigationController extends Notifier<NavGoalState> {
     state = const NavGoalState();
   }
 
-  /// 确认并下发目标点（MQTT QoS1 + 应用层状态机）。
-  void confirm() {
+  /// 确认并下发目标点（网关 HTTP + WS 回执）。
+  Future<void> confirm() async {
     final world = state.pendingWorld;
     if (world == null) return;
-    final sent = ref
+    final sent = await ref
         .read(missionCommandProvider)
         .sendNavigate(world.dx, world.dy, state.theta);
     if (sent) {
@@ -55,4 +54,3 @@ class NavigationController extends Notifier<NavGoalState> {
     }
   }
 }
-

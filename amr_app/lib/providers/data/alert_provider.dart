@@ -1,13 +1,15 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../../core/topic_mapping.dart';
 import '../../models/robot_status.dart';
-import '../comm/mqtt_provider.dart';
+import '../comm/gateway_provider.dart';
 
-/// 告警流（amr/alert，QoS0）。UI 侧用 ref.listen 消费。
+/// 告警流：网关订阅 `amr/alert` 后通过 WS 推送 `{"type":"alert","data":{...}}`。
 final alertProvider = StreamProvider<AlertMessage>((ref) {
   return ref
-      .watch(mqttClientProvider)
-      .subscribe(TopicMapping.alert)
-      .map(AlertMessage.fromJson);
+      .watch(gatewayWsProvider)
+      .messages
+      .where((msg) => msg['type'] == 'alert')
+      .map((msg) => AlertMessage.fromJson(
+            Map<String, dynamic>.from(msg['data'] as Map? ?? const {}),
+          ));
 });

@@ -1,5 +1,5 @@
 name: amr_app
-description: 仿真巡检 AMR Flutter 上位机（rosbridge + MQTT）
+description: 仿真巡检 AMR Flutter 上位机（业务网关 HTTP + WS 推送）
 publish_to: 'none'
 version: 0.1.0
 
@@ -15,7 +15,6 @@ dependencies:
   hive: ^2.2.3
   hive_flutter: ^1.1.0
   web_socket_channel: ^3.0.3
-  mqtt_client: ^10.2.1
   video_player: ^2.9.2
   fvp: ^0.32.0
   shared_preferences: ^2.3.0

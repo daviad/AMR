@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:convert';
 import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
@@ -9,16 +8,14 @@ import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:video_player/video_player.dart';
 
-import '../comm/rosbridge_client.dart';
 import '../core/constants.dart';
-import '../core/topic_mapping.dart';
-import '../providers/comm/rosbridge_provider.dart';
 
 /// 视频源类型
+///
+/// 视频链路直连 MediaMTX，不经业务网关（见 docs/架构-网关收口.md §4.4）。
 enum VideoSource {
-  webrtc,    // WebRTC WHEP（主路径，H.264 硬解）
-  rtsp,      // RTSP（video_player 硬解，TCP fallback）
-  rosbridge, // rosbridge CompressedImage（JPEG 软解，仅兼容旧链路）
+  webrtc, // WebRTC WHEP（主路径，H.264 硬解）
+  rtsp, // RTSP（video_player 硬解，TCP fallback）
 }
 
 /// 画质策略：自动在主/低码流间切换，也可手动锁定。
@@ -122,9 +119,6 @@ class VideoHealthSnapshot {
 abstract class VideoStreamPlayer {
   VideoSource get source;
 
-  /// JPEG 帧流（仅 rosbridge 模式有数据）
-  Stream<Uint8List>? get frameStream;
-
   /// RTSP 模式的 video_player 控制器（仅 rtsp 模式非 null）
   VideoPlayerController? get controller;
 
@@ -141,67 +135,6 @@ abstract class VideoStreamPlayer {
   bool get isRunning;
 }
 
-/// rosbridge CompressedImage 实现（JPEG 软解，兼容旧链路）
-class RosbridgeCompressedPlayer implements VideoStreamPlayer {
-  RosbridgeCompressedPlayer(this._client);
-
-  final RosbridgeClient _client;
-  StreamSubscription<Map<String, dynamic>>? _sub;
-  final StreamController<Uint8List> _controller =
-      StreamController<Uint8List>.broadcast();
-
-  @override
-  VideoSource get source => VideoSource.rosbridge;
-
-  @override
-  Stream<Uint8List>? get frameStream => _controller.stream;
-
-  @override
-  VideoPlayerController? get controller => null;
-
-  @override
-  RTCVideoRenderer? get renderer => null;
-
-  @override
-  Stream<VideoHealthSnapshot>? get healthStream => null;
-
-  @override
-  VideoHealthSnapshot get health =>
-      const VideoHealthSnapshot(state: VideoHealthState.healthy);
-
-  @override
-  bool get isRunning => _sub != null;
-
-  @override
-  Future<void> start() async {
-    if (_sub != null) return;
-    debugPrint('[Video] start() subscribing to ${TopicMapping.cameraCompressed}');
-    _sub = _client
-        .subscribe(
-          TopicMapping.cameraCompressed,
-          type: 'sensor_msgs/CompressedImage',
-          queueLength: 1,
-        )
-        .listen((msg) {
-      final data = msg['data'];
-      if (data is String && !_controller.isClosed) {
-        try {
-          final bytes = base64Decode(data);
-          _controller.add(bytes);
-        } catch (e) {
-          debugPrint('[Video] decode error: $e');
-        }
-      }
-    }, onError: (e) => debugPrint('[Video] subscribe stream error: $e'));
-  }
-
-  @override
-  Future<void> stop() async {
-    await _sub?.cancel();
-    _sub = null;
-  }
-}
-
 /// RTSP H.264 实现（video_player 硬解，TCP）
 class RtspVideoPlayer implements VideoStreamPlayer {
   RtspVideoPlayer(this._rtspUrl);
@@ -211,9 +144,6 @@ class RtspVideoPlayer implements VideoStreamPlayer {
 
   @override
   VideoSource get source => VideoSource.rtsp;
-
-  @override
-  Stream<Uint8List>? get frameStream => null;
 
   @override
   VideoPlayerController? get controller => _controller;
@@ -293,9 +223,6 @@ class WebRtcWhepPlayer implements VideoStreamPlayer {
 
   @override
   VideoSource get source => VideoSource.webrtc;
-
-  @override
-  Stream<Uint8List>? get frameStream => null;
 
   @override
   VideoPlayerController? get controller => null;
@@ -624,11 +551,8 @@ class WebRtcWhepPlayer implements VideoStreamPlayer {
   }
 }
 
-/// 视频流播放器管理器：支持 WebRTC / RTSP / rosbridge 动态切换。
+/// 视频流播放器管理器：支持 WebRTC / RTSP 动态切换（不经业务网关）。
 class VideoStreamManager extends ChangeNotifier {
-  VideoStreamManager(this._ref);
-
-  final Ref _ref;
   VideoStreamPlayer? _player;
   VideoSource _currentSource = VideoSource.webrtc;
   VideoQualityMode _qualityMode = VideoQualityMode.auto;
@@ -654,8 +578,6 @@ class VideoStreamManager extends ChangeNotifier {
     final saved = prefs.getString('video_source');
     if (saved == 'rtsp') {
       _currentSource = VideoSource.rtsp;
-    } else if (saved == 'rosbridge') {
-      _currentSource = VideoSource.rosbridge;
     } else {
       _currentSource = VideoSource.webrtc;
     }
@@ -738,10 +660,6 @@ class VideoStreamManager extends ChangeNotifier {
             : AppConstants.videoMainPath;
         _player = RtspVideoPlayer(AppConstants.rtspUrl(path));
         break;
-      case VideoSource.rosbridge:
-        _player = RosbridgeCompressedPlayer(
-            _ref.read(rosbridgeClientProvider));
-        break;
     }
     await _player!.start();
     _health = _player!.health;
@@ -793,7 +711,7 @@ class VideoStreamManager extends ChangeNotifier {
 /// 视频流管理器 Provider
 final videoStreamManagerProvider =
     ChangeNotifierProvider<VideoStreamManager>((ref) {
-  return VideoStreamManager(ref);
+  return VideoStreamManager();
 });
 
 /// 便捷 Provider：当前播放器（供 UI 监听重建）

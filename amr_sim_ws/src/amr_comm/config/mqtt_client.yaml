@@ -7,6 +7,9 @@ mqtt_client:
     broker:
       host: localhost
       port: 1884
+      # 网关收口后 broker 不再允许匿名；本桥用 robot 账号（只读指令、写回报/状态）
+      user: robot
+      pass: robot-dev-pass
     bridge:
       # ── MQTT → ROS：命令（QoS 1）──
       mqtt2ros:

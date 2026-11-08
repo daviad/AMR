@@ -3,8 +3,8 @@ import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../comm/gateway_client.dart';
 import '../core/message_models.dart';
-import '../core/topic_mapping.dart';
 import '../map/layers/base_map_layer.dart';
 import '../map/layers/inspection_points_layer.dart';
 import '../map/layers/path_layer.dart';
@@ -13,8 +13,7 @@ import '../map/layers/target_point_layer.dart';
 import '../map/map_view.dart';
 import '../models/command.dart';
 import '../models/robot_status.dart';
-import '../providers/comm/mqtt_provider.dart';
-import '../providers/comm/rosbridge_provider.dart';
+import '../providers/comm/gateway_provider.dart';
 import '../providers/data/alert_provider.dart';
 import '../providers/data/battery_provider.dart';
 import '../providers/data/map_provider.dart';
@@ -71,16 +70,15 @@ class _MapPageState extends ConsumerState<MapPage> {
 
     final battery = ref.watch(batteryProvider).valueOrNull;
     final mode = ref.watch(modeProvider).valueOrNull ?? '--';
-    final rosConnected = ref.watch(rosConnectionProvider).valueOrNull ?? false;
-    final mqttConnected =
-        ref.watch(mqttConnectionProvider).valueOrNull ?? false;
+    final health = ref.watch(gatewayHealthProvider).valueOrNull;
 
     return Scaffold(
       appBar: AppBar(
         title: const Text('AMR 巡检'),
         actions: [
-          _connDot(rosConnected, 'WS'),
-          _connDot(mqttConnected, 'MQTT'),
+          _connDot(health?.http ?? false, 'GW'),
+          _connDot(health?.ws ?? false, 'WS'),
+          _connDot(health?.mqtt ?? false, 'MQTT'),
           const SizedBox(width: 8),
           _batteryIndicator(battery),
           const SizedBox(width: 8),
@@ -227,10 +225,7 @@ class _MapPageState extends ConsumerState<MapPage> {
   Widget _modeMenu(String currentMode) {
     return PopupMenuButton<String>(
       tooltip: '模式切换',
-      onSelected: (mode) {
-        ref.read(mqttClientProvider).publishCommand(
-            TopicMapping.cmdMode, buildModePayload(mode));
-      },
+      onSelected: (mode) => _sendCommand('mode', buildModePayload(mode)),
       itemBuilder: (_) => const [
         PopupMenuItem(value: 'manual', child: Text('手动')),
         PopupMenuItem(value: 'auto', child: Text('自动')),
@@ -418,20 +413,28 @@ class _MapPageState extends ConsumerState<MapPage> {
     });
   }
 
-  void _estop() {
-    ref
-        .read(mqttClientProvider)
-        .publishCommand(TopicMapping.cmdEStop, buildEstopPayload(true));
-    ScaffoldMessenger.of(context)
-        .showSnackBar(const SnackBar(content: Text('已发送急停')));
-  }
+  void _estop() => _sendCommand('estop', buildEstopPayload(true), ok: '已发送急停');
 
-  void _returnCharge() {
-    ref
-        .read(mqttClientProvider)
-        .publishCommand(TopicMapping.cmdReturnCharge, buildEmptyPayload());
-    ScaffoldMessenger.of(context)
-        .showSnackBar(const SnackBar(content: Text('已发送回充命令')));
+  void _returnCharge() =>
+      _sendCommand('return_charge', buildEmptyPayload(), ok: '已发送回充命令');
+
+  /// 非任务指令走网关 HTTP（网关是唯一的 MQTT 发布者）。
+  Future<void> _sendCommand(
+    String name,
+    Map<String, dynamic> payload, {
+    String ok = '指令已发送',
+  }) async {
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      await ref.read(gatewayClientProvider).sendCommand(name, payload);
+      messenger.showSnackBar(SnackBar(content: Text(ok)));
+    } on GatewayException catch (e) {
+      messenger.showSnackBar(
+        SnackBar(content: Text('发送失败 ${e.code}: ${e.message}')),
+      );
+    } catch (e) {
+      messenger.showSnackBar(SnackBar(content: Text('网关不可达: $e')));
+    }
   }
 
   void _showAlert(AlertMessage alert) {

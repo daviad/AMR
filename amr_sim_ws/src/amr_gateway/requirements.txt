@@ -1,0 +1,3 @@
+# 网关新增依赖（标准库能做的都不在这里）
+paho-mqtt>=2.1,<3      # Python 侧 MQTT 客户端；标准库没有 MQTT
+websockets>=14,<18     # 同时用于 WS 服务端与 rosbridge 客户端，避免再引入 websocket-client

@@ -8,16 +8,36 @@ class AppConstants {
   static const String host =
       String.fromEnvironment('AMR_HOST', defaultValue: '127.0.0.1');
 
-  // `rosbridge_websocket`。机器人 → App 的遥测直通，只订阅不发命令：
-  // `/map`（`TRANSIENT_LOCAL` 整图）、`/scan`、`/tf`、`/odom`、`/amcl_pose`、`/plan`、
-  // `/camera/image_raw/compressed`（拍照单帧，不是视频流）。App 与 Web 大屏共用；
-  // 无鉴权，禁止直接暴露公网。服务端：`amr_comm/launch/rosbridge.launch.py`
+  // ───────────────── 业务网关（App 唯一业务出口）─────────────────
+  // 收口后 App 不再直连 rosbridge / MQTT：业务走 HTTP，推送走 WS，视频仍走 MediaMTX。
+  // 见 docs/架构-网关收口.md。
+  static const int gatewayHttpPort = 8080;
+  static const int gatewayWsPort = 8081;
+  static const String gatewayToken = String.fromEnvironment(
+    'AMR_GATEWAY_TOKEN',
+    defaultValue: 'amr-dev-token',
+  );
+
+  /// 控制权 holder：一台设备一个标记，用于 device_lock 区分 App 与 Web 大屏。
+  static const String controlHolder = String.fromEnvironment(
+    'AMR_CONTROL_HOLDER',
+    defaultValue: 'app-flutter',
+  );
+
+  static const String gatewayHttpBase = 'http://$host:$gatewayHttpPort';
+
+  static String get gatewayWsUrl =>
+      'ws://$host:$gatewayWsPort/ws?token=$gatewayToken';
+
+  // ───────────────── 以下仅用于调试 / 视频链路 ─────────────────
+  // `/rosbridge` 已降级为调试工具：网关独占它，App 运行路径不再连接。
+  // `/mqtt` 仅网关与仿真端使用；App 没有账号，也不应连接。
+
+  /// rosbridge 调试端口（网关内部使用；App 不连接）。
   static const int rosbridgeWsPort = 9090;
-  // `mosquitto` TCP 监听。`amr/cmd/*`（App → 机器人，QoS 1）；`amr/cmd/ack|feedback|result`、
-  // `amr/status/*`、`amr/alert`、`amr/trace`（机器人 → App，QoS 0）。移动端走此口；配置：`amr_comm/config/mosquitto.conf:3`
+  /// mosquitto TCP：网关与仿真端 mqtt_client 使用（ACL 收口，App 无账号）。
   static const int mqttTcpPort = 1884;
-  // 同一个 broker 的 WebSocket 监听（不是第二个 broker），供浏览器（Web 大屏）使用，
-  // 因为浏览器不能开原生 TCP。配置：`mosquitto.conf:6-7`
+  // 同一个 broker 的 WebSocket 监听，仅调试用（App 不再走 MQTT）。
   static const int mqttWsPort = 9002;
   // `MediaMTX` RTSP，视频兜底链路：Gazebo 相机 → `gst_video_source` → RTSP 推流。
   // WebRTC 不通时需在相机页手动切换，不会自动降级。配置：`amr_gazebo/config/mediamtx.yml:6-7`
