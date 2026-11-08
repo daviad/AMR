@@ -24,6 +24,24 @@
       </inertial>
     </xacro:macro>
 
+    <!-- 地面投影帧（Nav2 约定，2026-11-08 修正）：
+         base_footprint 落在 z=0 地面，base_link 在其上方 0.08 m。
+         差速驱动插件发布 odom->base_footprint（z 恒 0），
+         robot_state_publisher 由 URDF 固定关节发布 base_footprint->base_link(z=+0.08)。
+         修正前 odom->base_link 的 z 恒为 0，导致 RViz 里车体整体沉到地平线以下 0.08 m。 -->
+    <link name="${tf_prefix}base_footprint">
+      <inertial>
+        <mass value="0.001"/>
+        <inertia ixx="1e-6" ixy="0.0" ixz="0.0"
+                 iyy="1e-6" iyz="0.0" izz="1e-6"/>
+      </inertial>
+    </link>
+    <joint name="${tf_prefix}base_footprint_joint" type="fixed">
+      <parent link="${tf_prefix}base_footprint"/>
+      <child link="${tf_prefix}base_link"/>
+      <origin xyz="0 0 0.08" rpy="0 0 0"/>
+    </joint>
+
     <!-- 底盘主体：0.40(x) x 0.30(y) x 0.10(z)，几何中心即 base_link 原点
          顶面 z=+0.05，底面 z=-0.05（距地面 0.03m 离地间隙） -->
     <link name="${tf_prefix}base_link">
@@ -152,7 +170,8 @@
 
     <!-- 前脚轮（万向球）：半径 0.025，球心 z=-0.055，球底 z=-0.08 与驱动轮底共面着地
          结构对照实验结论（2026-11-07）：改成真实"swivel+滚轮"万向轮后，
-         原地转向指令跟踪反而从 96.7% 降到 79%，故保留固定球 + mu=0 方案。 -->
+         原地转向指令跟踪反而从 96.7% 降到 79%，故保留固定球方案；
+         摩擦取值见 amr_robot.xacro（2026-11-08 三组对照后定为 mu=0.02）。 -->
     <link name="${tf_prefix}front_caster_link">
       <visual>
         <geometry>

@@ -2,7 +2,7 @@
 amcl:
   ros__parameters:
     use_sim_time: true
-    base_frame_id: "base_link"
+    base_frame_id: "base_footprint"
     odom_frame_id: "odom"
     global_frame_id: "map"
     scan_topic: /scan
@@ -153,7 +153,7 @@ bt_navigator:
   ros__parameters:
     use_sim_time: true
     global_frame: map
-    robot_base_frame: base_link
+    robot_base_frame: base_footprint
     odom_topic: /odom
     bt_loop_duration: 10
     default_server_timeout: 20
@@ -172,7 +172,7 @@ local_costmap:
       update_frequency: 5.0
       publish_frequency: 2.0
       global_frame: odom
-      robot_base_frame: base_link
+      robot_base_frame: base_footprint
       rolling_window: true
       width: 3
       height: 3
@@ -209,7 +209,7 @@ global_costmap:
       update_frequency: 1.0
       publish_frequency: 1.0
       global_frame: map
-      robot_base_frame: base_link
+      robot_base_frame: base_footprint
       # 底盘真实 0.40×0.30 m，外接半径 0.25；原 robot_radius=0.22 会让四角
       # 在贴墙时嵌入墙体（RViz 上表现为"贴墙穿模"）。改为真实 footprint
       # 并留 2cm 余量。
@@ -273,7 +273,7 @@ behavior_server:
       plugin: "nav2_behaviors::Wait"
     local_frame: odom
     global_frame: map
-    robot_base_frame: base_link
+    robot_base_frame: base_footprint
     transform_tolerance: 0.1
     simulate_ahead_time: 2.0
     # 恢复行为也统一到 ≤0.5 rad/s，避免恢复动作把机器人甩出地图
@@ -324,7 +324,7 @@ lifecycle_manager_localization:
 collision_monitor:
   ros__parameters:
     use_sim_time: true
-    base_frame_id: "base_link"
+    base_frame_id: "base_footprint"
     odom_frame_id: "odom"
     observation_sources: ["scan"]
     polygons: ["safe_circle"]
@@ -347,7 +347,7 @@ docking_server:
     undock_linear_tolerance: 0.05
     undock_angular_tolerance: 0.05
     max_retries: 3
-    base_frame: "base_link"
+    base_frame: "base_footprint"
     fixed_frame: "odom"
     dock_backwards: false
     dock_prestaging_tolerance: 0.5

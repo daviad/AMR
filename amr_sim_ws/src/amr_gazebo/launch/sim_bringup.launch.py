@@ -30,7 +30,9 @@ def generate_launch_description():
                               description='无 GUI 模式（gz sim -s 仅服务端）'),
         DeclareLaunchArgument('x', default_value='0.0'),
         DeclareLaunchArgument('y', default_value='0.0'),
-        DeclareLaunchArgument('z', default_value='0.13'),
+        DeclareLaunchArgument('z', default_value='0.01',
+                              description='出生高度：URDF 根帧已改为 base_footprint（落地面 z=0），'
+                                          '轮底在模型 z=0，因此只需离地 1 cm 避免初始穿模'),
     ]
 
     # 机器人描述（xacro 展开）

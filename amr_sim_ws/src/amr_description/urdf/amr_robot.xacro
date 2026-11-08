@@ -26,18 +26,20 @@
     <mu2>1.0</mu2>
   </gazebo>
 
-  <!-- 前脚轮（万向球）摩擦：置 0 让球体无横向阻力自由滑动。
-       A/B 实测（2026-11-07，同工况 90° 原地转向）：
-        mu=0 → 车体/指令 = 0.967；mu=1.0 → 0.486（球体被地面锁死，明显更差）。
-       扭矩 2.0 vs 10.0 N·m 结果完全一致，说明残余偏差不是扭矩受限。 -->
+  <!-- 前脚轮（万向球）摩擦：2026-11-08 三组对照结论（原地 180°/360°，各 5 次）：
+       mu=0    → 车体实转 / odom = 1.131 / 1.134（odom 少报约 13%）；
+       mu=0.02 → 0.969 / 0.977（odom 多报约 3%，已回到 1.0x 附近）；
+       加后脚轮（同样 mu=0）无改善（1.129 / 1.134），故不保留后脚轮。
+       脚轮摩擦是原地自旋 yaw 误差的主因；mu=1.0 会把球体锁死（实测 0.486，明显更差）。
+       详见 docs/AMR-原地自旋yaw误差与URDF贴地修正-20261108-02.md -->
   <gazebo reference="$(arg tf_prefix)front_caster_link">
-    <mu1>0.0</mu1>
-    <mu2>0.0</mu2>
+    <mu1>0.02</mu1>
+    <mu2>0.02</mu2>
   </gazebo>
 
   <!-- gz-sim 模型级插件（gazebo 扩展，非 <ros> 标签） -->
   <gazebo>
-    <!-- 差速驱动：/cmd_vel 控制，发布 /odom 与 odom->base_link TF（真实传感器链路）。
+    <!-- 差速驱动：/cmd_vel 控制，发布 /odom 与 odom->base_footprint TF（真实传感器链路）。
          工程化处理"撞墙穿墙"：加 max_wheel_torque 限制轮端扭矩，
          使撞墙时轮子打滑而非完美空转，避免轮式里程计累积不真实的巨大漂移。
          真实机器人撞墙时电机也会停转/打滑，里程计漂移在 SLAM 可纠正范围内。 -->
@@ -52,7 +54,9 @@
       <odom_topic>odom</odom_topic>
       <tf_topic>tf</tf_topic>
       <frame_id>odom</frame_id>
-      <child_frame_id>$(arg tf_prefix)base_link</child_frame_id>
+      <!-- 2026-11-08 贴地修正：odom 的子帧改为 base_footprint（落地面 z=0），
+           base_link 由 robot_state_publisher 经固定关节抬高 0.08 m。 -->
+      <child_frame_id>$(arg tf_prefix)base_footprint</child_frame_id>
     </plugin>
     <!-- 关节状态发布（robot_state_publisher 需要 /joint_states）
          必须显式指定 topic：gz 默认发在 /joint_state（无 s），与 bridge 配置不符，
