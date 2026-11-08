@@ -41,7 +41,7 @@
 
 # ---------- 网关运行时 ----------
 # 由 amr_gateway/scripts/setup_mqtt_auth.sh 生成，含账号口令，不进 git
-/amr_sim_ws/src/amr_comm/config/mosquitto.passwd
+#/amr_sim_ws/src/amr_comm/config/mosquitto.passwd
 
 # ---------- 日志与录制数据 ----------
 **/*.log
