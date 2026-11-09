@@ -32,7 +32,7 @@ class _CameraPageState extends ConsumerState<CameraPage> {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) async {
-      await ref.read(videoStreamManagerProvider).init();
+      await ref.read(videoStreamManagerProvider.notifier).init();
       if (mounted) setState(() => _initialized = true);
     });
   }
@@ -58,8 +58,9 @@ class _CameraPageState extends ConsumerState<CameraPage> {
             tooltip: '画质策略',
             icon: const Icon(Icons.tune),
             initialValue: manager.qualityMode,
-            onSelected: (mode) =>
-                ref.read(videoStreamManagerProvider).setQualityMode(mode),
+            onSelected: (mode) => ref
+                .read(videoStreamManagerProvider.notifier)
+                .setQualityMode(mode),
             itemBuilder: (context) => const [
               PopupMenuItem(
                 value: VideoQualityMode.auto,
@@ -81,7 +82,7 @@ class _CameraPageState extends ConsumerState<CameraPage> {
             icon: const Icon(Icons.settings_input_antenna),
             initialValue: source,
             onSelected: (s) =>
-                ref.read(videoStreamManagerProvider).switchSource(s),
+                ref.read(videoStreamManagerProvider.notifier).switchSource(s),
             itemBuilder: (context) => const [
               PopupMenuItem(
                 value: VideoSource.webrtc,

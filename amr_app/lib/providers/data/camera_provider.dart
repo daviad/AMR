@@ -17,6 +17,6 @@ final cameraFrameProvider = Provider.autoDispose<Stream<Uint8List>?>((ref) {
 
 /// 确保 manager 已初始化（在 App 启动或进入相机页时调用）。
 final videoManagerInitProvider = FutureProvider<void>((ref) async {
-  final manager = ref.read(videoStreamManagerProvider);
+  final manager = ref.read(videoStreamManagerProvider.notifier);
   await manager.init();
 });

@@ -48,7 +48,7 @@ class NavigationController extends Notifier<NavGoalState> {
     final world = state.pendingWorld;
     if (world == null) return;
     final sent = ref
-        .read(missionCommandProvider)
+        .read(missionCommandProvider.notifier)
         .sendNavigate(world.dx, world.dy, state.theta);
     if (sent) {
       state = const NavGoalState();

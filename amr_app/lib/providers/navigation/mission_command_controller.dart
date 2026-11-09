@@ -11,6 +11,17 @@ import '../../core/topic_mapping.dart';
 import '../../models/command.dart';
 import '../comm/mqtt_provider.dart';
 
+/// 指令快照：不可变，UI 只按值渲染。
+@immutable
+class MissionCommandState {
+  const MissionCommandState({this.machine, this.lastEnvelope});
+
+  final CommandStateMachine? machine;
+  final Map<String, dynamic>? lastEnvelope;
+
+  bool get hasCommand => machine != null;
+}
+
 /// 业务指令控制面：MQTT 单一权威通道 + 应用层状态机。
 ///
 /// 职责：
@@ -18,14 +29,15 @@ import '../comm/mqtt_provider.dart';
 ///  - 订阅 amr/cmd/ack、amr/cmd/feedback、amr/cmd/result，驱动状态机；
 ///  - ACK / Feedback / Result 超时，不永久悬挂；
 ///  - 取消、重发（同 cmd_id）与结构化 trace 日志。
-class MissionCommandCenter extends ChangeNotifier {
-  MissionCommandCenter(this._ref) {
+class MissionCommandCenter extends Notifier<MissionCommandState> {
+  @override
+  MissionCommandState build() {
+    ref.onDispose(_dispose);
     _subscribe();
+    return const MissionCommandState();
   }
 
-  final Ref _ref;
-  CommandStateMachine? _machine;
-  Map<String, dynamic>? _lastEnvelope;
+  CommandStateMachine? get _machine => state.machine;
 
   StreamSubscription<Map<String, dynamic>>? _ackSub;
   StreamSubscription<Map<String, dynamic>>? _feedbackSub;
@@ -35,12 +47,8 @@ class MissionCommandCenter extends ChangeNotifier {
   Timer? _feedbackTimer;
   Timer? _resultTimer;
   Timer? _cancelTimer;
-  bool _disposed = false;
 
-  CommandStateMachine? get machine => _machine;
-  bool get hasCommand => _machine != null;
-
-  AppMqttClient get _mqtt => _ref.read(mqttClientProvider);
+  AppMqttClient get _mqtt => ref.read(mqttClientProvider);
 
   void _subscribe() {
     _ackSub = _mqtt
@@ -69,18 +77,20 @@ class MissionCommandCenter extends ChangeNotifier {
       createdAtMs: now,
       ttlMs: ttlMs,
     );
-    _machine = m;
-    _lastEnvelope = buildGoalCommand(
-      cmdId: cmdId,
-      traceId: traceId,
-      timestampMs: now,
-      ttlMs: ttlMs,
-      x: x,
-      y: y,
-      theta: theta,
+    state = MissionCommandState(
+      machine: m,
+      lastEnvelope: buildGoalCommand(
+        cmdId: cmdId,
+        traceId: traceId,
+        timestampMs: now,
+        ttlMs: ttlMs,
+        x: x,
+        y: y,
+        theta: theta,
+      ),
     );
     _log(m, 'command_created', extra: {'x': x, 'y': y, 'theta': theta});
-    if (!_mqtt.publishCommand(TopicMapping.cmdGoal, _lastEnvelope!)) {
+    if (!_mqtt.publishCommand(TopicMapping.cmdGoal, state.lastEnvelope!)) {
       m.onPublishFailed(now, 'MQTT 未连接');
       _log(m, 'publish_failed');
       _emit();
@@ -123,7 +133,7 @@ class MissionCommandCenter extends ChangeNotifier {
   /// 重发同一 cmd_id。服务端按 cmd_id 幂等：不重复执行物理动作，只回放结果。
   bool retry() {
     final m = _machine;
-    final envelope = _lastEnvelope;
+    final envelope = state.lastEnvelope;
     if (m == null || envelope == null || m.phase.isTerminal) return false;
     if (!_mqtt.publishCommand(TopicMapping.cmdGoal, envelope)) return false;
     m.onRepublished(DateTime.now().millisecondsSinceEpoch);
@@ -134,11 +144,10 @@ class MissionCommandCenter extends ChangeNotifier {
   }
 
   void clear() {
-    if (_machine != null && _machine!.phase.isActive) return;
+    final current = _machine;
+    if (current != null && current.phase.isActive) return;
     _cancelTimers();
-    _machine = null;
-    _lastEnvelope = null;
-    notifyListeners();
+    state = const MissionCommandState();
   }
 
   void _startTimers(CommandStateMachine m) {
@@ -249,24 +258,21 @@ class MissionCommandCenter extends ChangeNotifier {
   }
 
   void _emit() {
-    if (_disposed) return;
-    notifyListeners();
+    final current = state;
+    state = MissionCommandState(
+      machine: current.machine,
+      lastEnvelope: current.lastEnvelope,
+    );
   }
 
-  @override
-  void dispose() {
-    _disposed = true;
+  void _dispose() {
     _cancelTimers();
     _ackSub?.cancel();
     _feedbackSub?.cancel();
     _resultSub?.cancel();
-    super.dispose();
   }
 }
 
 final missionCommandProvider =
-    ChangeNotifierProvider<MissionCommandCenter>((ref) {
-  final center = MissionCommandCenter(ref);
-  ref.onDispose(center.dispose);
-  return center;
-});
+    NotifierProvider<MissionCommandCenter, MissionCommandState>(
+        MissionCommandCenter.new);

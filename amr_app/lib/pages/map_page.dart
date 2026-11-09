@@ -246,8 +246,8 @@ class _MapPageState extends ConsumerState<MapPage> {
     );
   }
 
-  Widget _missionCard(MissionCommandCenter center) {
-    final m = center.machine!;
+  Widget _missionCard(MissionCommandState mission) {
+    final m = mission.machine!;
     final color = m.phase.isTerminal
         ? (m.phase == CommandPhase.succeeded ? Colors.green : Colors.red)
         : (m.phase == CommandPhase.stale ||
@@ -280,7 +280,8 @@ class _MapPageState extends ConsumerState<MapPage> {
                 const Spacer(),
                 if (m.phase.isActive && m.phase != CommandPhase.canceling)
                   InkWell(
-                    onTap: center.cancel,
+                    onTap: () =>
+                        ref.read(missionCommandProvider.notifier).cancel(),
                     child: const Padding(
                       padding: EdgeInsets.all(2),
                       child: Text('取消', style: TextStyle(fontSize: 12)),
@@ -293,12 +294,14 @@ class _MapPageState extends ConsumerState<MapPage> {
                       visualDensity: VisualDensity.compact,
                       padding: const EdgeInsets.symmetric(horizontal: 6),
                     ),
-                    onPressed: center.retry,
+                    onPressed: () =>
+                        ref.read(missionCommandProvider.notifier).retry(),
                     child: const Text('重发', style: TextStyle(fontSize: 12)),
                   ),
                 if (m.phase.isTerminal)
                   InkWell(
-                    onTap: center.clear,
+                    onTap: () =>
+                        ref.read(missionCommandProvider.notifier).clear(),
                     child: const Icon(Icons.close, size: 16),
                   ),
               ],

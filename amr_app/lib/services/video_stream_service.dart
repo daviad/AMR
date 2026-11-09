@@ -624,11 +624,26 @@ class WebRtcWhepPlayer implements VideoStreamPlayer {
   }
 }
 
-/// 视频流播放器管理器：支持 WebRTC / RTSP / rosbridge 动态切换。
-class VideoStreamManager extends ChangeNotifier {
-  VideoStreamManager(this._ref);
+/// 视频管理器快照：不可变，UI 只按值渲染。
+@immutable
+class VideoManagerState {
+  const VideoManagerState({
+    this.player,
+    this.currentSource = VideoSource.webrtc,
+    this.qualityMode = VideoQualityMode.auto,
+    this.isLowQuality = false,
+    this.health = const VideoHealthSnapshot(),
+  });
 
-  final Ref _ref;
+  final VideoStreamPlayer? player;
+  final VideoSource currentSource;
+  final VideoQualityMode qualityMode;
+  final bool isLowQuality;
+  final VideoHealthSnapshot health;
+}
+
+/// 视频流播放器管理器：支持 WebRTC / RTSP / rosbridge 动态切换。
+class VideoStreamManager extends Notifier<VideoManagerState> {
   VideoStreamPlayer? _player;
   VideoSource _currentSource = VideoSource.webrtc;
   VideoQualityMode _qualityMode = VideoQualityMode.auto;
@@ -641,11 +656,21 @@ class VideoStreamManager extends ChangeNotifier {
   int _healthyStreak = 0;
   bool _initialized = false;
 
-  VideoSource get currentSource => _currentSource;
-  VideoStreamPlayer? get player => _player;
-  VideoHealthSnapshot get health => _health;
-  VideoQualityMode get qualityMode => _qualityMode;
-  bool get isLowQuality => _lowQuality;
+  @override
+  VideoManagerState build() {
+    ref.onDispose(_dispose);
+    return const VideoManagerState();
+  }
+
+  void _emit() {
+    state = VideoManagerState(
+      player: _player,
+      currentSource: _currentSource,
+      qualityMode: _qualityMode,
+      isLowQuality: _lowQuality,
+      health: _health,
+    );
+  }
 
   Future<void> init() async {
     if (_initialized) return;
@@ -667,7 +692,7 @@ class VideoStreamManager extends ChangeNotifier {
       _qualityMode = VideoQualityMode.main;
     }
     await _createPlayer();
-    notifyListeners();
+    _emit();
   }
 
   Future<void> switchSource(VideoSource source) async {
@@ -680,10 +705,10 @@ class VideoStreamManager extends ChangeNotifier {
     _currentSource = source;
     _health = const VideoHealthSnapshot();
     // 先通知：UI 立即切换到新源的占位视图，避免使用已 dispose 的旧播放器
-    notifyListeners();
+    _emit();
     await _createPlayer();
     // 再通知：新播放器就绪（WebRTC renderer / RTSP initialize 完成）
-    notifyListeners();
+    _emit();
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString('video_source', source.name);
   }
@@ -700,7 +725,7 @@ class VideoStreamManager extends ChangeNotifier {
       final wantLow = mode == VideoQualityMode.low;
       if (wantLow != _lowQuality) await _restartForQuality(wantLow);
     }
-    notifyListeners();
+    _emit();
   }
 
   Future<void> _restartForQuality(bool low) async {
@@ -715,9 +740,9 @@ class VideoStreamManager extends ChangeNotifier {
       await _player?.stop();
       _player = null;
       _health = const VideoHealthSnapshot();
-      notifyListeners();
+      _emit();
       await _createPlayer();
-      notifyListeners();
+      _emit();
     } finally {
       _qualitySwitching = false;
     }
@@ -740,7 +765,7 @@ class VideoStreamManager extends ChangeNotifier {
         break;
       case VideoSource.rosbridge:
         _player = RosbridgeCompressedPlayer(
-            _ref.read(rosbridgeClientProvider));
+            ref.read(rosbridgeClientProvider));
         break;
     }
     await _player!.start();
@@ -752,7 +777,7 @@ class VideoStreamManager extends ChangeNotifier {
     if (_currentSource == VideoSource.webrtc) {
       _evaluateAutoQuality(snapshot);
     }
-    notifyListeners();
+    _emit();
   }
 
   void _evaluateAutoQuality(VideoHealthSnapshot snapshot) {
@@ -781,20 +806,17 @@ class VideoStreamManager extends ChangeNotifier {
     }
   }
 
-  @override
-  void dispose() {
+  void _dispose() {
     _healthSub?.cancel();
     _player?.stop();
     _player = null;
-    super.dispose();
   }
 }
 
 /// 视频流管理器 Provider
 final videoStreamManagerProvider =
-    ChangeNotifierProvider<VideoStreamManager>((ref) {
-  return VideoStreamManager(ref);
-});
+    NotifierProvider<VideoStreamManager, VideoManagerState>(
+        VideoStreamManager.new);
 
 /// 便捷 Provider：当前播放器（供 UI 监听重建）
 final videoStreamPlayerProvider = Provider<VideoStreamPlayer?>((ref) {
