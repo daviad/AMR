@@ -4,15 +4,11 @@
 
 **环境**：WSL2 + Ubuntu 24.04 + ROS 2 Jazzy + Gazebo Sim 8.15（gz-sim8）+ MediaMTX；上位机为 Flutter（Android 模拟器与 Web 已实测，iOS 未验证）。**纯仿真，不涉及真实硬件**。
 
----
+***
+
 > 感谢AI本工程是我在AI辅助下完成的，更准确的说是AI辅助我完成。 没有AI我不可能这么快掌握这么多相关技术点。 我落地了，并且掌握了这些技术点。 比如记得很早以前在公司的时候就听后端说到过stun服务器，我也去看了资料，但一直没真正理解。现在不同了有了AI，并且在这个项目选型上也遇到了，这次我真的理解了。还有很多类似的技术，AI扩大了自己的边界！
 
-
-
-
-https://github.com/user-attachments/assets/b66bfb63-700a-4abd-a62d-b3635ff66b62
-
-
+<https://github.com/user-attachments/assets/b66bfb63-700a-4abd-a62d-b3635ff66b62>
 
 ## 它能做什么
 
@@ -44,22 +40,87 @@ https://github.com/user-attachments/assets/b66bfb63-700a-4abd-a62d-b3635ff66b62
 - 统一告警通道 `amr/alert`：`ESTOP`、`ILLEGAL_MODE`、`ROUTE_EMPTY`、`LOW_BATTERY`、`DOCK_FAILED`。
 - App 与机器人之间用 MQTT 遗嘱消息 `amr/status/app_offline` 感知对端掉线。
 
----
+***
+
+## 具体的技术选型
+
+### 客户端 Flutter
+
+##### 数据流 依赖注入 响应式编程
+
+Flutter Riverpod 数据流选型图
+选型口诀：
+
+- 单次请求 → FutureProvider
+- 持续上报、只读展示 → StreamProvider
+- 持续上报 + 需要下发指令、业务控制 → AsyncNotifier（ViewModel）
+- 纯本地UI同步状态 → Notifier
+
+```mermaid
+flowchart LR
+    A[外部数据（网络/MQTT/ROS/传感器）] --> B{数据特征}
+    B -->|单次、一次性返回| C[Future]
+    C --> C1[FutureProvider<br/>适用：http单次请求、单次ROS服务调用、单次查询]
+    C1 --> Z[UI]
+
+    B -->|多次、持续推送| D[Stream]
+    D --> E{是否需要主动业务操作}
+    E -->|只读，仅展示数据，不发指令| F[StreamProvider<br/>纯只读流，无对外业务方法]
+    E -->|接收上报 + 需要下发指令/控制流程| G[AsyncNotifier（VM）<br/>持有状态 + 自定义业务方法，MVVM ViewModel]
+
+    B -->|本地同步状态，无外部异步| H[Notifier<br/>适用：弹窗开关、tab选中、页面本地状态]
+    H --> Z
+
+    F --> Z
+    G --> Z
+
+    note[补充规约：<br/>• 不引入RxDart第三方库；优先使用dart原生Stream算子 map/where/distinct<br/>• ChangeNotifierProvider新项目不推荐<br/>• 长连接服务添加 keepAlive:true<br/>• 默认autoDispose，无监听自动释放]
+```
+
+##### 性能
+
+- 多线程，并发
+
+### Dart 异步&并行要点
+
+1. Dart 默认单Isolate事件循环，async/await 是事件调度，**不是OS多线程**；仅对IO密集任务生效，CPU密集任务依然阻塞UI。
+2. 纯Dart并行首选：Isolate，内存隔离，传值存在拷贝开销。
+3. 复用原生SDK/平台算法：MethodChannel（通道，配合Native线程），双端维护成本中等。
+4. 跨平台重度C算法：FFI，直接调用C库，调试门槛最高。
+
+> 选型：IO用async/Stream；Dart计算走Isolate；原生SDK走Channel；C库走FFI。
+
+- Dart 也支持共享内存
+
+***
+
+## 技术亮点
+
+完整版见 **[docs/技术亮点.md](docs/技术亮点.md)**（每条：短句 + 为什么这么做 + 代码/文档链接）。
+
+- **端到端闭环**：鼠标点地图到机器人跑到位，中间是 MQTT 指令 + Nav2 Action + 反馈/结果回传，不是脚本串起来的假流程。
+- **通信分工明确**：WebSocket 传遥测、MQTT 传指令、WebRTC 传视频，各用各的强项，而不是一条通道全塞。
+- **弱网与兜底**：视频自动重连（1/2/4/8/10 s 退避）、健康度分级、主/低码流自动切换；源切换是手动兜底。
+- **视频链路**：GStreamer 双路编码 → MediaMTX → App 用 `fvp` 替换 `video_player` 底层做硬解，失败回退软解。
+- **ROS 2 工程化**：7 个功能包（description / gazebo / slam / nav / inspection / comm / bringup），SDF 场景 + URDF/Xacro 机器人，多个 bridge 处理 ROS ↔ Gazebo ↔ 上位机消息转换。
+- **建图稳定性**：定位到里程计漂移与渲染队列时间戳滞后导致的穿墙/错位，逐项修掉，并留下 A/B 实验记录。
+
+***
 
 ## 通信与端口
 
-| 用途 | 协议 / 通道 | 端口 | 说明 |
-|---|---|---|---|
-| 遥测（机器人 → App） | rosbridge WebSocket | 9090 | `/map` `/scan` `/tf` `/odom` `/plan` `/amcl_pose` 等 |
-| 指令（App → 机器人） | MQTT TCP | 1884 | `amr/cmd/*`，QoS 1 + `cmd_id` 幂等 |
-| 指令（浏览器大屏） | MQTT WebSocket | 9002 | Web 端专用入口 |
-| 视频主链路 | WHEP（HTTP 信令）+ ICE | 8889 / 8189(UDP) | App 默认；8189 不能 `adb reverse` |
-| 视频兜底 | RTSP（强制 TCP） | 18554 | 相机页手动切换 |
-| Web 视频 | HLS | 18888 | 大屏固定 |
+| 用途            | 协议 / 通道             | 端口               | 说明                                                  |
+| ------------- | ------------------- | ---------------- | --------------------------------------------------- |
+| 遥测（机器人 → App） | rosbridge WebSocket | 9090             | `/map` `/scan` `/tf` `/odom` `/plan` `/amcl_pose` 等 |
+| 指令（App → 机器人） | MQTT TCP            | 1884             | `amr/cmd/*`，QoS 1 + `cmd_id` 幂等                     |
+| 指令（浏览器大屏）     | MQTT WebSocket      | 9002             | Web 端专用入口                                           |
+| 视频主链路         | WHEP（HTTP 信令）+ ICE  | 8889 / 8189(UDP) | App 默认；8189 不能 `adb reverse`                        |
+| 视频兜底          | RTSP（强制 TCP）        | 18554            | 相机页手动切换                                             |
+| Web 视频        | HLS                 | 18888            | 大屏固定                                                |
 
 话题与消息模型的**唯一真实定义**在 [`amr_app/packages/amr_contracts`](amr_app/packages/amr_contracts)，App 与仿真端共用。
 
----
+***
 
 ## 快速开始
 
@@ -83,20 +144,7 @@ Windows 侧（与 WSL 脚本同目录）：
 
 完整步骤、排错与端口占用处理见 [docs/RUNBOOK.md](docs/RUNBOOK.md)（唯一权威运行手册），Windows 细则见 [docs/WINDOWS侧操作手册.md](docs/WINDOWS侧操作手册.md)，大屏见 [docs/WEB大屏操作手册.md](docs/WEB大屏操作手册.md)。
 
----
-
-## 技术亮点
-
-完整版见 **[docs/技术亮点.md](docs/技术亮点.md)**（每条：短句 + 为什么这么做 + 代码/文档链接）。
-
-- **端到端闭环**：鼠标点地图到机器人跑到位，中间是 MQTT 指令 + Nav2 Action + 反馈/结果回传，不是脚本串起来的假流程。
-- **通信分工明确**：WebSocket 传遥测、MQTT 传指令、WebRTC 传视频，各用各的强项，而不是一条通道全塞。
-- **弱网与兜底**：视频自动重连（1/2/4/8/10 s 退避）、健康度分级、主/低码流自动切换；源切换是手动兜底。
-- **视频链路**：GStreamer 双路编码 → MediaMTX → App 用 `fvp` 替换 `video_player` 底层做硬解，失败回退软解。
-- **ROS 2 工程化**：7 个功能包（description / gazebo / slam / nav / inspection / comm / bringup），SDF 场景 + URDF/Xacro 机器人，多个 bridge 处理 ROS ↔ Gazebo ↔ 上位机消息转换。
-- **建图稳定性**：定位到里程计漂移与渲染队列时间戳滞后导致的穿墙/错位，逐项修掉，并留下 A/B 实验记录。
-
----
+***
 
 ## 目录结构
 
@@ -111,24 +159,23 @@ amr/
 └── learn/                    # 学习笔记
 ```
 
----
-
 ## 文档
 
-| 文档 | 内容 |
-|---|---|
-| [docs/RUNBOOK.md](docs/RUNBOOK.md) | 唯一权威运行手册：启动、验证、排错 |
-| [docs/architecture.md](docs/architecture.md) | 分层架构、技术选型、模块边界 |
-| [docs/视频流全链路.md](docs/视频流全链路.md) | 采集 → 编码 → MediaMTX → WHEP/RTSP/HLS → App |
-| [docs/WebRTC排查与原理.md](docs/WebRTC排查与原理.md) | WHEP 握手、ICE、端口映射与常见故障 |
-| [docs/技术亮点.md](docs/技术亮点.md) | 技术亮点完整版与实现依据 |
-| [docs/WINDOWS侧操作手册.md](docs/WINDOWS侧操作手册.md) | Windows 侧构建、同步、模拟器联调 |
-| [docs/WEB大屏操作手册.md](docs/WEB大屏操作手册.md) | Web 大屏构建与访问 |
+| 文档                                           | 内容                                       |
+| -------------------------------------------- | ---------------------------------------- |
+| [docs/RUNBOOK.md](docs/RUNBOOK.md)           | 唯一权威运行手册：启动、验证、排错                        |
+| [docs/architecture.md](docs/architecture.md) | 分层架构、技术选型、模块边界                           |
+| [docs/视频流全链路.md](docs/视频流全链路.md)             | 采集 → 编码 → MediaMTX → WHEP/RTSP/HLS → App |
+| [docs/WebRTC排查与原理.md](docs/WebRTC排查与原理.md)   | WHEP 握手、ICE、端口映射与常见故障                    |
+| [docs/技术亮点.md](docs/技术亮点.md)                 | 技术亮点完整版与实现依据                             |
+| [docs/WINDOWS侧操作手册.md](docs/WINDOWS侧操作手册.md) | Windows 侧构建、同步、模拟器联调                     |
+| [docs/WEB大屏操作手册.md](docs/WEB大屏操作手册.md)       | Web 大屏构建与访问                              |
 
 ## 遇到的坑
 
 ### 制图穿墙（误差累积）
-### 地图不出现 僵尸注册 
+
+### 地图不出现 僵尸注册
 
 # 去TMD大龄
 
@@ -171,11 +218,9 @@ amr/
 我的核心竞争力从来没有消失：十几年一线落地经验、项目复盘能力、问题拆解与闭环能力、带团队交付的经验，还有稳定、长期主义的做事心态。我一直相信，我的思维、分析、解决问题的底子是优等的，只是这份能力，和短期市场里的赚钱机会，从来不是充分必要关系。
 
 去他的大龄。我还没有满四十，距离退休还有二十多年的职业生涯，远没到画上句号的时候。
-                                                                          
 
 AI 可以生成代码、加速开发流程，但它依旧需要人来定义目标、把控方向、甄别对错、推动落地。就算有 AI 加持，我们大多数人依然是执行者，不是Boss；只是我们的角色，更偏向于技术负责人、方案把关人。
 
 AI 能够颠覆很多软件行业的生产方式，却改变不了物理世界的客观规律，突破不了硬件的物理极限，更替代不了人对风险、成本、落地可行性的权衡和判断。
 
-我不求一步翻身，只求稳步向前。如果之后能遇到合适的岗位，自然是幸事；就算暂时没有，沉下心打磨相关的作品，深耕底层技术，本身也是在丰富自己。至少能减少内耗，不焦虑。
-      
+我不求一步翻身，只求稳步向前。如果之后能遇到合适的岗位，自然是幸事；就算暂时没有，沉下心打磨相关的作品，深耕底层技术，本身也是在丰富自己。至少能减少内耗，不焦虑。                                            
