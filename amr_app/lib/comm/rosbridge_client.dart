@@ -1,13 +1,17 @@
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:web_socket_channel/status.dart' as ws_status;
 import 'package:web_socket_channel/web_socket_channel.dart';
 
 import 'rosbridge_protocol.dart';
+// IO 端带 WS 心跳与握手超时，Web 端用浏览器原生通道
+import 'ws_channel_io.dart'
+    if (dart.library.html) 'ws_channel_web.dart';
 
 /// rosbridge WebSocket 客户端封装。
 /// - subscribe/publish/unsubscribe，订阅数据以广播 Stream 分发
-/// - 断线自动重连（2s 退避）+ 5s 应用层心跳，10s 无消息判定僵死
+/// - 断线自动重连（2s 退避）；IO 端由 WS 层 ping/pong 判活，不依赖业务消息
 /// - 同一 topic 引用计数，重连后自动恢复所有订阅
 class RosbridgeClient {
   RosbridgeClient({required this.url});
@@ -17,10 +21,8 @@ class RosbridgeClient {
   WebSocketChannel? _channel;
   StreamSubscription<dynamic>? _channelSub;
   Timer? _reconnectTimer;
-  Timer? _pingTimer;
   bool _disposed = false;
   bool _connected = false;
-  DateTime _lastMsgTime = DateTime.now();
 
   /// topic -> 订阅参数（用于重连恢复）
   final Map<String, _SubParams> _subParams = {};
@@ -40,32 +42,56 @@ class RosbridgeClient {
 
   void connect() => _doConnect();
 
-  void _doConnect() {
+  Future<void> _doConnect() async {
     if (_disposed) return;
-    _channelSub?.cancel();
+    _reconnectTimer?.cancel();
+    _reconnectTimer = null;
+    _teardown();
+
+    final WebSocketChannel channel;
     try {
-      _channel = WebSocketChannel.connect(Uri.parse(url));
+      channel = connectRosbridge(Uri.parse(url));
     } catch (_) {
       _scheduleReconnect();
       return;
     }
-    _lastMsgTime = DateTime.now();
-    _channelSub = _channel!.stream.listen(
+    _channel = channel;
+    try {
+      // 等握手完成：失败会在 ready 上抛异常，从而被这里捕获，
+      // 不会变成未捕获异常，也不会"没连上就报已连接"。
+      await channel.ready;
+    } catch (_) {
+      if (!identical(_channel, channel)) return;
+      _teardown();
+      _scheduleReconnect();
+      return;
+    }
+    if (_disposed || !identical(_channel, channel)) return;
+
+    _channelSub = channel.stream.listen(
       _onData,
-      onError: (_) => _onDisconnected(),
-      onDone: _onDisconnected,
+      onError: (_) => _onDisconnected(channel),
+      onDone: () => _onDisconnected(channel),
       cancelOnError: true,
     );
-    // 连接建立无显式事件，先乐观置位；失败会立即走 onError/onDone
     _connected = true;
     _connController.add(true);
     _advertised.clear();
     _resubscribeAll();
-    _startPing();
+  }
+
+  /// 关掉当前连接并清理订阅，但不安排重连。
+  /// 必须显式 close：只 cancel 订阅会留下半开 socket，服务端 ESTAB 会持续累积。
+  void _teardown() {
+    _channelSub?.cancel();
+    _channelSub = null;
+    final channel = _channel;
+    _channel = null;
+    if (channel == null) return;
+    channel.sink.close(ws_status.goingAway).catchError((_) {});
   }
 
   void _onData(dynamic raw) {
-    _lastMsgTime = DateTime.now();
     if (raw is! String) return;
     Map<String, dynamic> json;
     try {
@@ -86,15 +112,15 @@ class RosbridgeClient {
     }
   }
 
-  void _onDisconnected() {
+  /// [from] 用于丢弃已被替换的旧连接迟到的 onDone/onError。
+  void _onDisconnected([WebSocketChannel? from]) {
     if (_disposed) return;
+    if (from != null && !identical(from, _channel)) return;
     if (_connected) {
       _connected = false;
       _connController.add(false);
     }
-    _pingTimer?.cancel();
-    _channelSub?.cancel();
-    _channel = null;
+    _teardown();
     _scheduleReconnect();
   }
 
@@ -103,19 +129,6 @@ class RosbridgeClient {
     _reconnectTimer?.cancel();
     _reconnectTimer =
         Timer(const Duration(seconds: 2), _doConnect);
-  }
-
-  void _startPing() {
-    _pingTimer?.cancel();
-    _pingTimer = Timer.periodic(const Duration(seconds: 5), (_) {
-      // 10s 无任何消息视为僵死，主动断开重连
-      if (DateTime.now().difference(_lastMsgTime) >
-          const Duration(seconds: 10)) {
-        _onDisconnected();
-        return;
-      }
-      _send(rosPing());
-    });
   }
 
   void _send(Map<String, dynamic> msg) {
@@ -185,9 +198,7 @@ class RosbridgeClient {
   void dispose() {
     _disposed = true;
     _reconnectTimer?.cancel();
-    _pingTimer?.cancel();
-    _channelSub?.cancel();
-    _channel?.sink.close();
+    _teardown();
     _connController.close();
   }
 }

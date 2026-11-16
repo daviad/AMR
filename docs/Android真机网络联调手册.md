@@ -218,17 +218,31 @@ ss -tn  | grep -E ':9090|:1884'                        # 应有 ESTAB，remote �
 
 ***
 
-## 7. 已知问题（App 侧，待修）
+## 7. 已修复：WS 每 12 秒重连 + ESTAB 累积
 
-实测真机连上后，rosbridge 上会累积多条 ESTAB（每 10~12 秒 +1），logcat 同时周期性出现 `Connection timed out`。
+**现象**：真机连上后，rosbridge 上会累积多条 ESTAB（每 10~12 秒 +1），logcat 周期性出现 `Connection timed out`，状态灯闪烁。
 
-原因链：
+**原因链**：
 
-1. `rosbridge_client.dart` 的 5s 心跳发出 `{"op":"ping"}` 后，若 10s 内没有任何消息进 `_lastMsgTime`，会判定僵死；
-2. 判定僵死后走 `_onDisconnected()` → 2s 后重连，周期正好 10+2 秒；
-3. `_doConnect()` 只 `_channelSub?.cancel()`，**没有 close 旧 socket**，因此每轮重连都留下一条 ESTAB。
+1. 旧的 5s 应用层心跳发的是 `{"op":"ping"}`，而 rosbridge **不支持**这个 op（会回一条错误/忽略），不会产生 `pong`；
+2. 10s 内没有消息更新 `_lastMsgTime` 就判定僵死，于是 `10s + 2s 退避` 形成固定周期的重连；
+3. `_doConnect()` 只 `_channelSub?.cancel()`、**没有 close 旧 socket**，每轮重连都留下一条半开连接；
+4. 另有两处次生问题：连接未握手完成就乐观置位"已连接"，以及 `WebSocketChannel.connect` 的失败无人 `await`，表现为 logcat 里的 `Unhandled Exception: WebSocketChannelException`。
 
-影响：地图等 latched 话题会周期性重刷、状态灯闪烁，长时间运行会累积连接。修法是心跳改用 rosbridge 会回包的机制（或只在发送成功后计时），并在重连/断开时显式 `sink.close()`。
+**修法**（`lib/comm/rosbridge_client.dart` + 新增平台分叉）：
+
+| 改动 | 作用 |
+|---|---|
+| 删除 `{"op":"ping"}` 应用层心跳 | rosbridge 不支持该 op，判活改为传输层 |
+| IO 端 `IOWebSocketChannel.connect(pingInterval: 10s)` | WS 控制帧 ping/pong，无 pong 自动断开；不依赖业务消息 |
+| `connectTimeout: 5s` | 握手失败快速进入重连，不再被 OS SYN 超时拖到分钟级 |
+| `await channel.ready` 后再置 `_connected` | 连上才报已连接，失败被捕获，不再产生未捕获异常 |
+| `_teardown()` 里显式 `sink.close(goingAway)` | 重连/断开/销毁都关闭旧 socket，ESTAB 不再累积 |
+| `_onDisconnected(from)` 做身份校验 | 丢弃旧连接迟到的 onDone/onError |
+
+**验证**（2026-11-15 真机）：重装 APK 后连续观察 90 秒，手机到 `9090` 的连接数恒为 1，`1884` 恒为 1，`WebSocketChannelException` 计数为 0，WHEP 正常 `Connected`。
+
+> 经验：WS 判活不要用"多久没收到业务消息"，业务空闲（比如只停在设置页）会被误判成断线；要么用传输层 ping/pong，要么用协议里确实会回包的机制。
 
 ***
 

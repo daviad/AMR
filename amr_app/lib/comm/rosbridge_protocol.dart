@@ -31,8 +31,6 @@ Map<String, dynamic> rosAdvertise(String topic, String type) =>
 Map<String, dynamic> rosPublish(String topic, Map<String, dynamic> msg) =>
     {'op': 'publish', 'topic': topic, 'msg': msg};
 
-Map<String, dynamic> rosPing() => {'op': 'ping'};
-
 /// 构造 geometry_msgs/PoseStamped（map 帧），theta 为偏航角（弧度）。
 Map<String, dynamic> buildPoseStampedMsg(double x, double y, double theta) {
   final ms = DateTime.now().millisecondsSinceEpoch;
