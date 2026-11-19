@@ -153,7 +153,8 @@ def generate_launch_description():
                  'use_sim_time': False,
                  'source': video_source,
                  'image_topic': '/camera/image_raw',
-                 'fps': 5.0,
+                 'fps': 15.0,
+                 'keyframe_interval': 30,
                  'main_width': 320,
                  'main_height': 240,
                  'low_width': 160,
@@ -175,7 +176,7 @@ def generate_launch_description():
              condition=IfCondition(use_legacy_video),
              parameters=[{'use_sim_time': use_sim_time,
                           'rtsp_url': 'rtsp://localhost:18554/camera',
-                          'fps': 5.0}]),
+                          'fps': 15.0}]),
     ])
 
     return LaunchDescription(declare_args + [

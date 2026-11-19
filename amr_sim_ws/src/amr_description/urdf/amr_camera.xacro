@@ -46,9 +46,9 @@
         <gz_frame_id>${tf_prefix}camera_optical_link</gz_frame_id>
         <!-- 软件渲染（llvmpipe）下摄像头是主要渲染负载，且与 gpu_lidar 共用
              ogre2 渲染队列：640×480@15Hz 曾拖垮渲染管线，导致 /scan 时间戳
-             持续滞后 /clock（SLAM 发散根因）。降为 320×240@5Hz，
-             像素吞吐降 16 倍，巡检/识别用途仍可用。 -->
-        <update_rate>5</update_rate>
+             持续滞后 /clock（SLAM 发散根因）。当前使用 320×240@15Hz，
+             像素吞吐降低 4 倍；若 /scan 再次滞后 /clock，应优先回调帧率。 -->
+        <update_rate>15</update_rate>
         <always_on>true</always_on>
         <camera>
           <horizontal_fov>1.047</horizontal_fov>
